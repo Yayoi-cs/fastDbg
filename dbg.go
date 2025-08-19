@@ -9,11 +9,20 @@ import (
 	"strings"
 )
 
+var mainDbger TypeDbg = TypeDbg{
+	pid:      0,
+	path:     "",
+	isAttach: false,
+	rip:      0,
+	isStart:  false,
+}
+
 type TypeDbg struct {
 	pid      int
 	path     string
 	isAttach bool
 	rip      uint64
+	isStart  bool
 }
 
 func Run(bin string, args ...string) (*TypeDbg, error) {
@@ -41,6 +50,7 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 		path:     absPath,
 		isAttach: false,
 		rip:      0,
+		isStart:  true,
 	}
 	cmd := exec.Command(absPath, args...)
 
@@ -52,8 +62,19 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 		return nil, err
 	}
 	dbger.pid = cmd.Process.Pid
-
 	Printf("%s started with PID:%d\n", absPath, dbger.pid)
+
+	_, err = dbger.wait()
+	if err != nil {
+		return nil, err
+	}
+
+	dbger.rip, err = dbger.GetRip()
+
+	if err != nil {
+		return nil, err
+	}
+
 	return dbger, nil
 }
 
@@ -71,6 +92,12 @@ func Attach(pid int) (*TypeDbg, error) {
 	}
 
 	Printf("attached to PID:%d\n", pid)
+
+	_, err = dbger.wait()
+	if err != nil {
+		return nil, err
+	}
+
 	return dbger, nil
 }
 
@@ -121,6 +148,7 @@ func (dbger *TypeDbg) Continue() error {
 	if err != nil {
 		return err
 	}
+
 	bp, ok := func(rip uint64) (*TypeBp, bool) {
 		for i, b := range Bps {
 			if b.addr == uintptr(rip) && b.isEnable {
@@ -130,6 +158,7 @@ func (dbger *TypeDbg) Continue() error {
 		}
 		return nil, false
 	}(rip)
+
 	if ok {
 		if bp.isEnable {
 			if err := bp.disableBp(); err != nil {

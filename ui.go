@@ -5,17 +5,21 @@ import (
 )
 
 func (dbger *TypeDbg) Interactive() {
-	if dbger.rip != 0 {
-		Printf("[%x]$ ", dbger.rip)
-	} else {
-		Printf("[fastDbg]$ ")
-	}
+	for {
+		if !dbger.isStart {
+			Printf("[fastDbg]$ ")
+		} else {
+			Printf("[%x]$ ", dbger.rip)
+		}
 
-	var req string
-	fmt.Scanf("%s", &req)
-
-	err := dbger.cmdExec(req)
-	if err != nil {
-		LogError(err.Error())
+		var req string
+		fmt.Scanf("%s", &req)
+		if req == "q" || req == "exit" {
+			break
+		}
+		err := dbger.cmdExec(req)
+		if err != nil {
+			LogError(err.Error())
+		}
 	}
 }
