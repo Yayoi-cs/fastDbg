@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
+	"bufio"
+	"os"
 )
 
 func (dbger *TypeDbg) Interactive() {
+	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		if !dbger.isStart {
 			Printf("[fastDbg]$ ")
@@ -13,7 +15,13 @@ func (dbger *TypeDbg) Interactive() {
 		}
 
 		var req string
-		fmt.Scanf("%s", &req)
+		if !scanner.Scan() {
+			break
+		}
+		req = scanner.Text()
+		if req == "" {
+			continue
+		}
 		if req == "q" || req == "exit" {
 			break
 		}

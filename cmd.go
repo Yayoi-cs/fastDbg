@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strconv"
 )
@@ -16,6 +15,7 @@ func (dbger *TypeDbg) cmdExec(req string) error {
 	for rgx, fnc := range cmd {
 		regex, err := regexp.Compile(rgx)
 		if err != nil {
+
 			return err
 		}
 
@@ -37,7 +37,6 @@ func (dbger *TypeDbg) cmdBreak(a interface{}) error {
 	if !ok {
 		return errors.New("invalid arguments")
 	}
-	fmt.Println("Log args @ cmdBreak ", args)
 	addr, err := strconv.ParseUint(args[2], 0, 64)
 	if err != nil {
 		return err
@@ -59,8 +58,7 @@ func (dbger *TypeDbg) cmdRun(a interface{}) error {
 	if !ok {
 		return errors.New("invalid arguments")
 	}
-	fmt.Println("Log args @ cmdBreak ", args)
-	tmpDbger, err := Run(dbger.path, args...)
+	tmpDbger, err := Run(dbger.path, args[2:]...)
 	if err != nil {
 		return err
 	}
