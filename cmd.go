@@ -1,14 +1,32 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
+	"fmt"
+	"golang.org/x/sys/unix"
+	"os/exec"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 )
 
 var cmd = map[string]func(*TypeDbg, interface{}) error{
-	"^\\s*(b|break|B|BREAK)\\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$": (*TypeDbg).cmdBreak,
-	"^\\s*(run|RUN)(?:\\s+(.+))?$":                                         (*TypeDbg).cmdRun,
+	`^\s*(b|break|B|BREAK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`: (*TypeDbg).cmdBreak,
+	`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:          (*TypeDbg).cmdEnable,
+	`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:         (*TypeDbg).cmdDisable,
+	`^\s*(disass)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:          (*TypeDbg).cmdDisass,
+	`^\s*(r|run|R|RUN)(?:\s+(.+))?$`:                                     (*TypeDbg).cmdRun,
+	`^\s*(regs)(?:\s+(.+))?$`:                                            (*TypeDbg).cmdRegs,
+	`^\s*(!)(.+)$`:                                                       (*TypeDbg).cmdCmd,
+	`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`:                          (*TypeDbg).cmdContinue,
+	`^\s*(context|CONTEXT)\s*$`:                                          (*TypeDbg).cmdContext,
+	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                     (*TypeDbg).cmdVmmap,
+	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                           (*TypeDbg).cmdSym,
+	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:         (*TypeDbg).cmdDumpByte,
+	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpDword,
+	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpQword,
 }
 
 func (dbger *TypeDbg) cmdExec(req string) error {
@@ -53,6 +71,34 @@ func (dbger *TypeDbg) cmdBreak(a interface{}) error {
 	return err
 }
 
+func (dbger *TypeDbg) cmdEnable(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	off, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+
+	err = EnableBp(int(off))
+	return err
+}
+
+func (dbger *TypeDbg) cmdDisable(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	off, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+
+	err = DisableBp(int(off))
+	return err
+}
+
 func (dbger *TypeDbg) cmdRun(a interface{}) error {
 	args, ok := a.([]string)
 	if !ok {
@@ -71,6 +117,144 @@ func (dbger *TypeDbg) cmdRun(a interface{}) error {
 		}
 	}
 	tmpBps = []uintptr{}
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdContinue(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+	err := dbger.Continue()
+	if err != nil {
+		return err
+	}
+
+	_, err = dbger.wait()
+	return err
+}
+
+func (dbger *TypeDbg) cmdContext(a interface{}) error {
+	hLine("registers")
+	var regs *unix.PtraceRegs
+	var err error
+	for _ = range 100 {
+		regs, err = dbger.getRegs()
+		if err == nil {
+			break
+		} else {
+			if dbger.isStopped() == false {
+				dbger.stop()
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if regs == nil {
+		LogError("Error while getting registers")
+		fmt.Println(err)
+	} else {
+		if dbger.arch == 64 {
+			Printf("$rax   : 0x%016x\n", regs.Rax)
+			Printf("$rbx   : 0x%016x\n", regs.Rbx)
+			Printf("$rcx   : 0x%016x\n", regs.Rcx)
+			Printf("$rdx   : 0x%016x\n", regs.Rdx)
+			Printf("$rsp   : 0x%016x\n", regs.Rsp)
+			Printf("$rbp   : 0x%016x\n", regs.Rbp)
+			Printf("$rsi   : 0x%016x\n", regs.Rsi)
+			Printf("$rdi   : 0x%016x\n", regs.Rdi)
+			Printf("$rip   : 0x%016x\n", regs.Rip)
+			Printf("$r8    : 0x%016x\n", regs.R8)
+			Printf("$r9    : 0x%016x\n", regs.R9)
+			Printf("$r10   : 0x%016x\n", regs.R10)
+			Printf("$r11   : 0x%016x\n", regs.R11)
+			Printf("$r12   : 0x%016x\n", regs.R12)
+			Printf("$r13   : 0x%016x\n", regs.R13)
+			Printf("$r14   : 0x%016x\n", regs.R14)
+			Printf("$eflags: 0x%016x\n", regs.Eflags)
+		}
+		fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n", regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
+	}
+
+	hLine("stack")
+	if regs != nil {
+		if dbger.arch == 64 {
+			data, err := dbger.GetMemory(64, uintptr(regs.Rsp))
+			if err != nil {
+				LogError("Error while getting memory")
+			} else {
+				for i := 0; i < len(data); i += 8 {
+					fmt.Printf("0x%x: 0x%016x\n", regs.Rsp+uint64(i), binary.LittleEndian.Uint64(data[i:i+8]))
+				}
+			}
+		}
+	}
+
+	hLine("disassembly")
+	hLine("back trace")
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdVmmap(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	err := dbger.loadBase()
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("[start]              [end]              | [size]     | [offset]    | [rwx]  [path]")
+	if args[2] != "" {
+		for _, p := range procMapsDetail {
+			if strings.Contains(p.path, strings.TrimSpace(args[2])) {
+				fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, p.rwx, p.path)
+			}
+		}
+		return nil
+	}
+
+	for _, p := range procMapsDetail {
+		fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, p.rwx, p.path)
+	}
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdSym(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	return dbger.ListSymbols(args[2])
+}
+
+func (dbger *TypeDbg) cmdCmd(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+
+	fmt.Println(strings.Join(args, ","))
+
+	handle := exec.Command("/bin/sh", "-c", args[2])
+	output, err := handle.CombinedOutput()
+	fmt.Println(string(output))
+	return err
+}
+
+func (dbger *TypeDbg) cmdDisass(a interface{}) error {
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdRegs(a interface{}) error {
 
 	return nil
 }

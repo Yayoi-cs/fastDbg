@@ -75,6 +75,8 @@ func (dbger *TypeDbg) GetRegs(regName string) (uint64, error) {
 }
 
 func (dbger *TypeDbg) getRegs() (*unix.PtraceRegs, error) {
+	ptraceMutex.Lock()
+	defer ptraceMutex.Unlock()
 	regs := &unix.PtraceRegs{}
 	err := unix.PtraceGetRegs(dbger.pid, regs)
 	if err != nil {
@@ -156,6 +158,8 @@ func (dbger *TypeDbg) SetRegs(regName string, val uint64) error {
 }
 
 func (dbger *TypeDbg) setRegs(regs *unix.PtraceRegs) error {
+	ptraceMutex.Lock()
+	defer ptraceMutex.Unlock()
 	pid := dbger.pid
 	err := unix.PtraceSetRegs(pid, regs)
 	if err != nil {

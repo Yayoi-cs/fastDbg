@@ -60,6 +60,8 @@ func DisableBp(idx int) error {
 }
 
 func (bp *TypeBp) enableBp() error {
+	ptraceMutex.Lock()
+	defer ptraceMutex.Unlock()
 	_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
 	if err != nil {
 		return err
@@ -77,6 +79,8 @@ func (bp *TypeBp) enableBp() error {
 }
 
 func (bp *TypeBp) disableBp() error {
+	ptraceMutex.Lock()
+	defer ptraceMutex.Unlock()
 	int3InstrLittle := make([]byte, 8)
 	_, err := unix.PtracePeekData(bp.pid, bp.addr, int3InstrLittle)
 	if err != nil {
