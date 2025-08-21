@@ -60,41 +60,72 @@ func DisableBp(idx int) error {
 }
 
 func (bp *TypeBp) enableBp() error {
-	ptraceMutex.Lock()
-	defer ptraceMutex.Unlock()
-	_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
+	dbger := &TypeDbg{pid: bp.pid}
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	var origInstr uint64
+	var err error
+
+	err = dbger.execPtraceFunc(func() error {
+		_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
+		if err != nil {
+			return err
+		}
+
+		origInstr = binary.LittleEndian.Uint64(bp.instr)
+		int3Instr := (origInstr & ^uint64(0xff)) | 0xcc
+		int3InstrLittle := make([]byte, 8)
+		binary.LittleEndian.PutUint64(int3InstrLittle, int3Instr)
+
+		_, err = unix.PtracePokeData(bp.pid, bp.addr, int3InstrLittle)
+		return err
+	})
+
 	if err != nil {
+		if err == unix.ESRCH {
+			return errors.New("process does not exist or exited")
+		}
 		return err
 	}
-	origInstr := binary.LittleEndian.Uint64(bp.instr)
-	int3Instr := (origInstr & ^uint64(0xff)) | 0xcc
-	int3InstrLittle := make([]byte, 8)
-	binary.LittleEndian.PutUint64(int3InstrLittle, int3Instr)
-	_, err = unix.PtracePokeData(bp.pid, bp.addr, int3InstrLittle)
-	if err != nil {
-		return err
-	}
+
 	bp.isEnable = true
 	return nil
 }
 
 func (bp *TypeBp) disableBp() error {
-	ptraceMutex.Lock()
-	defer ptraceMutex.Unlock()
-	int3InstrLittle := make([]byte, 8)
-	_, err := unix.PtracePeekData(bp.pid, bp.addr, int3InstrLittle)
+	dbger := &TypeDbg{pid: bp.pid}
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	var err error
+
+	err = dbger.execPtraceFunc(func() error {
+		int3InstrLittle := make([]byte, 8)
+		_, err := unix.PtracePeekData(bp.pid, bp.addr, int3InstrLittle)
+		if err != nil {
+			return err
+		}
+
+		int3Instr := binary.LittleEndian.Uint64(int3InstrLittle)
+		origInstr := binary.LittleEndian.Uint64(bp.instr)
+		newInstr := (int3Instr & ^uint64(0xff)) | (origInstr & 0xff)
+		binInstr := make([]byte, 8)
+		binary.LittleEndian.PutUint64(binInstr, newInstr)
+
+		_, err = unix.PtracePokeData(bp.pid, bp.addr, binInstr)
+		return err
+	})
+
 	if err != nil {
+		if err == unix.ESRCH {
+			return errors.New("process does not exist or exited")
+		}
 		return err
 	}
-	int3Instr := binary.LittleEndian.Uint64(int3InstrLittle)
-	origInstr := binary.LittleEndian.Uint64(bp.instr)
-	newInstr := (int3Instr & ^uint64(0xff)) | (origInstr & 0xff)
-	binInstr := make([]byte, 8)
-	binary.LittleEndian.PutUint64(binInstr, newInstr)
-	_, err = unix.PtracePokeData(bp.pid, bp.addr, binInstr)
-	if err != nil {
-		return err
-	}
+
 	bp.isEnable = false
 	return nil
 }

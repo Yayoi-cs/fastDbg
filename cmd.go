@@ -135,61 +135,105 @@ func (dbger *TypeDbg) cmdContinue(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdContext(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
 	hLine("registers")
+
 	var regs *unix.PtraceRegs
 	var err error
-	for _ = range 100 {
+
+	if !dbger.isStopped() {
+		Printf("Process is running, stopping...\n")
+		if err := dbger.stop(); err != nil {
+			return fmt.Errorf("failed to stop process: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	for i := 0; i < 5; i++ {
 		regs, err = dbger.getRegs()
 		if err == nil {
 			break
-		} else {
-			if dbger.isStopped() == false {
-				dbger.stop()
+		}
+
+		if err == unix.ESRCH {
+			return errors.New("process exited")
+		}
+
+		if !dbger.isProcessAlive() {
+			return errors.New("process is not alive")
+		}
+
+		if !dbger.isStopped() {
+			Printf("Retrying to stop process (attempt %d/5)...\n", i+1)
+			if err := dbger.stop(); err != nil {
+				LogError("Failed to stop process: %v", err)
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if regs == nil {
-		LogError("Error while getting registers")
-		fmt.Println(err)
-	} else {
-		if dbger.arch == 64 {
-			Printf("$rax   : 0x%016x\n", regs.Rax)
-			Printf("$rbx   : 0x%016x\n", regs.Rbx)
-			Printf("$rcx   : 0x%016x\n", regs.Rcx)
-			Printf("$rdx   : 0x%016x\n", regs.Rdx)
-			Printf("$rsp   : 0x%016x\n", regs.Rsp)
-			Printf("$rbp   : 0x%016x\n", regs.Rbp)
-			Printf("$rsi   : 0x%016x\n", regs.Rsi)
-			Printf("$rdi   : 0x%016x\n", regs.Rdi)
-			Printf("$rip   : 0x%016x\n", regs.Rip)
-			Printf("$r8    : 0x%016x\n", regs.R8)
-			Printf("$r9    : 0x%016x\n", regs.R9)
-			Printf("$r10   : 0x%016x\n", regs.R10)
-			Printf("$r11   : 0x%016x\n", regs.R11)
-			Printf("$r12   : 0x%016x\n", regs.R12)
-			Printf("$r13   : 0x%016x\n", regs.R13)
-			Printf("$r14   : 0x%016x\n", regs.R14)
-			Printf("$eflags: 0x%016x\n", regs.Eflags)
-		}
-		fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n", regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
+
+		time.Sleep(50 * time.Millisecond)
 	}
 
+	if regs == nil {
+		LogError("Error while getting registers after %d attempts", 5)
+		return fmt.Errorf("failed to get registers: %v", err)
+	}
+
+	if dbger.arch == 64 {
+		Printf("$rax   : 0x%016x\n", regs.Rax)
+		Printf("$rbx   : 0x%016x\n", regs.Rbx)
+		Printf("$rcx   : 0x%016x\n", regs.Rcx)
+		Printf("$rdx   : 0x%016x\n", regs.Rdx)
+		Printf("$rsp   : 0x%016x\n", regs.Rsp)
+		Printf("$rbp   : 0x%016x\n", regs.Rbp)
+		Printf("$rsi   : 0x%016x\n", regs.Rsi)
+		Printf("$rdi   : 0x%016x\n", regs.Rdi)
+		Printf("$rip   : 0x%016x\n", regs.Rip)
+		Printf("$r8    : 0x%016x\n", regs.R8)
+		Printf("$r9    : 0x%016x\n", regs.R9)
+		Printf("$r10   : 0x%016x\n", regs.R10)
+		Printf("$r11   : 0x%016x\n", regs.R11)
+		Printf("$r12   : 0x%016x\n", regs.R12)
+		Printf("$r13   : 0x%016x\n", regs.R13)
+		Printf("$r14   : 0x%016x\n", regs.R14)
+		Printf("$eflags: 0x%016x\n", regs.Eflags)
+	}
+	fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
+		regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
+
 	hLine("stack")
-	if regs != nil {
-		if dbger.arch == 64 {
-			data, err := dbger.GetMemory(64, uintptr(regs.Rsp))
-			if err != nil {
-				LogError("Error while getting memory")
-			} else {
-				for i := 0; i < len(data); i += 8 {
-					fmt.Printf("0x%x: 0x%016x\n", regs.Rsp+uint64(i), binary.LittleEndian.Uint64(data[i:i+8]))
+	if regs != nil && dbger.arch == 64 {
+		data, err := dbger.GetMemory(64, uintptr(regs.Rsp))
+		if err != nil {
+			LogError("Error while getting stack memory: %v", err)
+		} else {
+			for i := 0; i < len(data); i += 8 {
+				if i+8 <= len(data) {
+					fmt.Printf("0x%x: 0x%016x\n", regs.Rsp+uint64(i),
+						binary.LittleEndian.Uint64(data[i:i+8]))
 				}
 			}
 		}
 	}
 
 	hLine("disassembly")
+	if regs != nil {
+		code, err := dbger.GetMemory(32, uintptr(regs.Rip))
+		if err != nil {
+			LogError("Error while getting code memory: %v", err)
+		} else {
+			err = Disassembly(code, regs.Rip)
+			if err != nil {
+				LogError("Error during disassembly: %v", err)
+			}
+		}
+	}
+
 	hLine("back trace")
 
 	return nil
