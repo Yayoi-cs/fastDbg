@@ -68,7 +68,7 @@ func (bp *TypeBp) enableBp() error {
 	var origInstr uint64
 	var err error
 
-	err = dbger.execPtraceFunc(func() error {
+	err = doSyscallErr(dbger.rpc, func() error {
 		_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
 		if err != nil {
 			return err
@@ -102,7 +102,7 @@ func (bp *TypeBp) disableBp() error {
 
 	var err error
 
-	err = dbger.execPtraceFunc(func() error {
+	err = doSyscallErr(dbger.rpc, func() error {
 		int3InstrLittle := make([]byte, 8)
 		_, err := unix.PtracePeekData(bp.pid, bp.addr, int3InstrLittle)
 		if err != nil {

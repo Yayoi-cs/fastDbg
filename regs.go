@@ -75,10 +75,14 @@ func (dbger *TypeDbg) GetRegs(regName string) (uint64, error) {
 }
 
 func (dbger *TypeDbg) getRegs() (*unix.PtraceRegs, error) {
-	ptraceMutex.Lock()
-	defer ptraceMutex.Unlock()
+	if !dbger.isProcessAlive() {
+		return nil, errors.New("process is not alive")
+	}
+
 	regs := &unix.PtraceRegs{}
-	err := unix.PtraceGetRegs(dbger.pid, regs)
+	err := doSyscallErr(dbger.rpc, func() error {
+		return unix.PtraceGetRegs(dbger.pid, regs)
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -158,12 +162,15 @@ func (dbger *TypeDbg) SetRegs(regName string, val uint64) error {
 }
 
 func (dbger *TypeDbg) setRegs(regs *unix.PtraceRegs) error {
-	ptraceMutex.Lock()
-	defer ptraceMutex.Unlock()
-	pid := dbger.pid
-	err := unix.PtraceSetRegs(pid, regs)
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	err := doSyscallErr(dbger.rpc, func() error {
+		return unix.PtraceSetRegs(dbger.pid, regs)
+	})
 	if err != nil {
-		return errors.New("PtraceSetRegs failed")
+		return errors.New("PtraceSetRegs failed: " + err.Error())
 	}
 
 	return nil

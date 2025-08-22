@@ -12,17 +12,16 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 )
 
-var ptraceMutex sync.Mutex
-
 var mainDbger TypeDbg = TypeDbg{
-	pid:  0,
-	path: "", isAttach: false,
-	rip:     0,
-	isStart: false,
-	arch:    64,
+	pid:      0,
+	path:     "",
+	isAttach: false,
+	rip:      0,
+	isStart:  false,
+	arch:     64,
+	rpc:      nil,
 }
 
 type TypeDbg struct {
@@ -32,6 +31,7 @@ type TypeDbg struct {
 	rip      uint64
 	isStart  bool
 	arch     int
+	rpc      *doSysRPC
 }
 
 var procMapsDetail []*proc
@@ -44,18 +44,32 @@ type proc struct {
 	path   string
 }
 
-func (dbger *TypeDbg) execPtraceFunc(fn func() error) error {
-	ptraceMutex.Lock()
-	defer ptraceMutex.Unlock()
-	return fn()
-}
-
 func (dbger *TypeDbg) isProcessAlive() bool {
 	if dbger.pid <= 0 {
 		return false
 	}
 	_, err := os.Stat(fmt.Sprintf("/proc/%d", dbger.pid))
 	return err == nil
+}
+
+func (dbger *TypeDbg) isStopped() bool {
+	if !dbger.isProcessAlive() {
+		return false
+	}
+
+	path := fmt.Sprintf("/proc/%d/stat", dbger.pid)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+
+	fields := strings.Fields(string(data))
+	if len(fields) < 3 {
+		return false
+	}
+
+	state := fields[2]
+	return state == "t" || state == "T"
 }
 
 func (dbger *TypeDbg) isProcessTraced() bool {
@@ -87,6 +101,9 @@ func (dbger *TypeDbg) loadBase() error {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		match := regex.FindStringSubmatch(scanner.Text())
+		if len(match) < 7 {
+			continue
+		}
 		startAddr, _ := strconv.ParseUint(match[1], 16, 64)
 		endAddr, _ := strconv.ParseUint(match[2], 16, 64)
 		offset, _ := strconv.ParseUint(match[4], 16, 64)
@@ -152,24 +169,29 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 		rip:      0,
 		isStart:  true,
 		arch:     arch,
-	}
-	cmd := exec.Command(absPath, args...)
-
-	cmd.SysProcAttr = &unix.SysProcAttr{
-		Ptrace: true,
+		rpc:      doSyscallWorker(),
 	}
 
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	doSyscallErr(dbger.rpc, func() error {
+		cmd := exec.Command(absPath, args...)
 
-	if err = cmd.Start(); err != nil {
-		return nil, err
-	}
-	dbger.pid = cmd.Process.Pid
-	Printf("%s started with PID:%d\n", absPath, dbger.pid)
+		cmd.SysProcAttr = &unix.SysProcAttr{
+			Ptrace: true,
+		}
 
-	_, err = dbger.stopWait()
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		if err = cmd.Start(); err != nil {
+			return err
+		}
+		dbger.pid = cmd.Process.Pid
+		Printf("%s started with PID:%d\n", absPath, dbger.pid)
+
+		return nil
+	})
+	err = dbger.stop()
 	if err != nil {
 		return nil, err
 	}
@@ -191,6 +213,8 @@ func Attach(pid int) (*TypeDbg, error) {
 		isAttach: true,
 		rip:      0,
 		isStart:  true,
+		arch:     64,
+		rpc:      doSyscallWorker(),
 	}
 
 	if !dbger.isProcessAlive() {
@@ -201,34 +225,24 @@ func Attach(pid int) (*TypeDbg, error) {
 		return nil, fmt.Errorf("process %d is already being traced", pid)
 	}
 
-	err := dbger.execPtraceFunc(func() error {
+	err := doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceAttach(pid)
 	})
 	if err != nil {
-		if err == unix.ESRCH {
-			return nil, fmt.Errorf("process %d does not exist or is not traceable", pid)
-		}
-		if err == unix.EPERM {
-			return nil, fmt.Errorf("permission denied: check ptrace_scope or run as root")
-		}
-		if err == unix.EBUSY {
-			return nil, fmt.Errorf("process %d is already being traced", pid)
-		}
-		return nil, fmt.Errorf("ptrace attach failed: %v", err)
+		return nil, dbger.formatPtraceError("attach", err)
 	}
 
 	Printf("attached to PID:%d\n", pid)
 
 	_, err = dbger.wait()
 	if err != nil {
-		dbger.execPtraceFunc(func() error {
+		err = doSyscallErr(dbger.rpc, func() error {
 			return unix.PtraceDetach(pid)
 		})
 		return nil, err
 	}
 
 	err = dbger.loadBase()
-
 	return dbger, nil
 }
 
@@ -237,7 +251,7 @@ func (dbger *TypeDbg) Detach() error {
 		return errors.New("invalid PID")
 	}
 
-	err := dbger.execPtraceFunc(func() error {
+	err := doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceDetach(dbger.pid)
 	})
 	if err != nil {
@@ -248,27 +262,8 @@ func (dbger *TypeDbg) Detach() error {
 	return nil
 }
 
-func (dbger *TypeDbg) isStopped() bool {
-	if !dbger.isProcessAlive() {
-		return false
-	}
-
-	path := fmt.Sprintf("/proc/%d/stat", dbger.pid)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return false
-	}
-
-	fields := strings.Fields(string(data))
-	if len(fields) < 3 {
-		return false
-	}
-
-	return fields[2] == "t"
-}
-
 func (dbger *TypeDbg) interrupt() error {
-	return dbger.execPtraceFunc(func() error {
+	return doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceInterrupt(dbger.pid)
 	})
 }
@@ -277,34 +272,40 @@ func (dbger *TypeDbg) wait() (unix.WaitStatus, error) {
 	var ws unix.WaitStatus
 	var err error
 
-	// waitもシリアライズする
-	err = dbger.execPtraceFunc(func() error {
+	err = doSyscallErr(dbger.rpc, func() error {
 		_, err = unix.Wait4(dbger.pid, &ws, 0, nil)
 		return err
 	})
 
 	if err != nil {
-		return 0, err
+		return 0, dbger.formatPtraceError("wait", err)
 	}
+
 	if ws.Exited() {
-		Printf("PID:%d exited\n", dbger.pid)
+		Printf("PID:%d exited with status %d\n", dbger.pid, ws.ExitStatus())
 		dbger.isStart = false
 		return ws, nil
 	}
+
 	if ws.Stopped() {
 		rip, err := dbger.GetRip()
-		if err != nil {
-			return ws, err
-		}
-		rip--
-		for i, b := range Bps {
-			if b.addr == uintptr(rip) && b.isEnable {
-				Printf("stopped at breakpoint %d @ %x\n", i, rip)
-				break
-			}
+		if err == nil {
+			dbger.rip = rip
+			dbger.checkBreakpoint(rip)
 		}
 	}
+
 	return ws, nil
+}
+
+func (dbger *TypeDbg) checkBreakpoint(rip uint64) {
+	checkAddr := rip - 1
+	for i, b := range Bps {
+		if b.addr == uintptr(checkAddr) && b.isEnable {
+			Printf("stopped at breakpoint %d @ %x\n", i, checkAddr)
+			break
+		}
+	}
 }
 
 func (dbger *TypeDbg) stopWait() (unix.WaitStatus, error) {
@@ -337,17 +338,14 @@ func (dbger *TypeDbg) Continue() error {
 	}(rip)
 
 	if ok && bp.isEnable {
-		err = dbger.execPtraceFunc(func() error {
-			if err := bp.disableBp(); err != nil {
-				return err
-			}
-			if err := dbger.SetRip(rip - 1); err != nil {
-				return err
-			}
-			if err := unix.PtraceSingleStep(dbger.pid); err != nil {
-				return err
-			}
-			return nil
+		if err := bp.disableBp(); err != nil {
+			return err
+		}
+		if err := dbger.SetRip(rip - 1); err != nil {
+			return err
+		}
+		err = doSyscallErr(dbger.rpc, func() error {
+			return unix.PtraceSingleStep(dbger.pid)
 		})
 		if err != nil {
 			return err
@@ -357,28 +355,38 @@ func (dbger *TypeDbg) Continue() error {
 			return err
 		}
 
-		err = dbger.execPtraceFunc(func() error {
-			return bp.enableBp()
-		})
+		err = bp.enableBp()
 		if err != nil {
 			return err
 		}
 	}
 
-	return dbger.execPtraceFunc(func() error {
+	return doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceCont(dbger.pid, 0)
 	})
 }
 
 func (dbger *TypeDbg) stop() error {
-	if !dbger.isProcessAlive() {
-		return errors.New("process is not alive")
-	}
-	return unix.Kill(dbger.pid, unix.SIGSTOP)
+	return doSyscallErr(dbger.rpc, func() error {
+		return unix.Kill(dbger.pid, unix.SIGSTOP)
+	})
 }
 
 func (dbger *TypeDbg) Step() error {
-	return dbger.execPtraceFunc(func() error {
+	return doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceSingleStep(dbger.pid)
 	})
+}
+
+func (dbger *TypeDbg) formatPtraceError(operation string, err error) error {
+	if err == unix.ESRCH {
+		return fmt.Errorf("%s failed: process %d does not exist or exited", operation, dbger.pid)
+	}
+	if err == unix.EPERM {
+		return fmt.Errorf("%s failed: permission denied", operation)
+	}
+	if err == unix.EBUSY {
+		return fmt.Errorf("%s failed: process is busy", operation)
+	}
+	return fmt.Errorf("%s failed: %v", operation, err)
 }

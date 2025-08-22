@@ -125,6 +125,7 @@ func (dbger *TypeDbg) cmdContinue(a interface{}) error {
 	if !dbger.isStart {
 		return errors.New("debuggee has not started")
 	}
+
 	err := dbger.Continue()
 	if err != nil {
 		return err
@@ -139,23 +140,37 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		return errors.New("debuggee has not started")
 	}
 
+	hLine("registers")
+
 	if !dbger.isProcessAlive() {
 		return errors.New("process is not alive")
 	}
-
-	hLine("registers")
-
-	var regs *unix.PtraceRegs
-	var err error
 
 	if !dbger.isStopped() {
 		Printf("Process is running, stopping...\n")
 		if err := dbger.stop(); err != nil {
 			return fmt.Errorf("failed to stop process: %v", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+
+		timeout := time.After(1 * time.Second)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		stopped := false
+		for !stopped {
+			select {
+			case <-timeout:
+				return errors.New("timeout waiting for process to stop")
+			case <-ticker.C:
+				stopped = dbger.isStopped()
+			}
+		}
 	}
-	for i := 0; i < 5; i++ {
+
+	var regs *unix.PtraceRegs
+	var err error
+
+	for attempt := 1; attempt <= 10; attempt++ {
 		regs, err = dbger.getRegs()
 		if err == nil {
 			break
@@ -165,23 +180,17 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 			return errors.New("process exited")
 		}
 
+		Printf("Getting registers failed (attempt %d/10): %v\n", attempt, err)
+
 		if !dbger.isProcessAlive() {
 			return errors.New("process is not alive")
 		}
 
-		if !dbger.isStopped() {
-			Printf("Retrying to stop process (attempt %d/5)...\n", i+1)
-			if err := dbger.stop(); err != nil {
-				LogError("Failed to stop process: %v", err)
-			}
-		}
-
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
 	}
 
 	if regs == nil {
-		LogError("Error while getting registers after %d attempts", 5)
-		return fmt.Errorf("failed to get registers: %v", err)
+		return fmt.Errorf("failed to get registers after 3 attempts: %v", err)
 	}
 
 	if dbger.arch == 64 {
