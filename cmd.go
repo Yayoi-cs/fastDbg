@@ -66,7 +66,7 @@ func (dbger *TypeDbg) cmdBreak(a interface{}) error {
 		return nil
 	}
 
-	_, err = NewBp(uintptr(addr), dbger.pid)
+	_, err = dbger.NewBp(uintptr(addr), dbger.pid)
 
 	return err
 }
@@ -81,7 +81,7 @@ func (dbger *TypeDbg) cmdEnable(a interface{}) error {
 		return err
 	}
 
-	err = EnableBp(int(off))
+	err = dbger.EnableBp(int(off))
 	return err
 }
 
@@ -95,7 +95,7 @@ func (dbger *TypeDbg) cmdDisable(a interface{}) error {
 		return err
 	}
 
-	err = DisableBp(int(off))
+	err = dbger.DisableBp(int(off))
 	return err
 }
 
@@ -111,7 +111,7 @@ func (dbger *TypeDbg) cmdRun(a interface{}) error {
 	mainDbger = *tmpDbger
 
 	for _, addr := range tmpBps {
-		_, err = NewBp(addr, dbger.pid)
+		_, err = dbger.NewBp(addr, dbger.pid)
 		if err != nil {
 			return err
 		}
@@ -232,14 +232,21 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 
 	hLine("disassembly")
 	if regs != nil {
-		code, err := dbger.GetMemory(32, uintptr(regs.Rip))
-		if err != nil {
-			LogError("Error while getting code memory: %v", err)
-		} else {
-			err = Disassembly(code, regs.Rip)
-			if err != nil {
-				LogError("Error during disassembly: %v", err)
+		code, ok := func() ([]byte, bool) {
+			for _, b := range Bps {
+				if uint64(b.addr) == regs.Rip-1 && b.isEnable {
+					code, _ := dbger.GetMemory(32, uintptr(regs.Rip-1))
+					copy(code, b.instr)
+					return code, true
+				}
 			}
+			return nil, false
+		}()
+		if !ok {
+			code, err = dbger.GetMemory(32, uintptr(regs.Rip))
+			disass(code, regs.Rip)
+		} else {
+			disass(code, regs.Rip-1)
 		}
 	}
 

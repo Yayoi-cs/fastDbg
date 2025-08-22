@@ -21,6 +21,7 @@ var mainDbger TypeDbg = TypeDbg{
 	rip:      0,
 	isStart:  false,
 	arch:     64,
+	isBp:     false,
 	rpc:      nil,
 }
 
@@ -31,6 +32,7 @@ type TypeDbg struct {
 	rip      uint64
 	isStart  bool
 	arch     int
+	isBp     bool
 	rpc      *doSysRPC
 }
 
@@ -169,6 +171,7 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 		rip:      0,
 		isStart:  true,
 		arch:     arch,
+		isBp:     false,
 		rpc:      doSyscallWorker(),
 	}
 
@@ -191,7 +194,7 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 
 		return nil
 	})
-	err = dbger.stop()
+	_, err = dbger.wait()
 	if err != nil {
 		return nil, err
 	}
@@ -327,10 +330,8 @@ func (dbger *TypeDbg) Continue() error {
 	}
 
 	bp, ok := func(rip uint64) (*TypeBp, bool) {
-		rip--
-		for i, b := range Bps {
-			if b.addr == uintptr(rip) && b.isEnable {
-				Printf("stopped at breakpoint %d @ %x\n", i, rip)
+		for _, b := range Bps {
+			if b.addr == uintptr(rip-1) && b.isEnable {
 				return &b, true
 			}
 		}
@@ -338,7 +339,7 @@ func (dbger *TypeDbg) Continue() error {
 	}(rip)
 
 	if ok && bp.isEnable {
-		if err := bp.disableBp(); err != nil {
+		if err := bp.disableBp(dbger); err != nil {
 			return err
 		}
 		if err := dbger.SetRip(rip - 1); err != nil {
@@ -350,12 +351,11 @@ func (dbger *TypeDbg) Continue() error {
 		if err != nil {
 			return err
 		}
-
 		if _, err = dbger.wait(); err != nil {
 			return err
 		}
 
-		err = bp.enableBp()
+		err = bp.enableBp(dbger)
 		if err != nil {
 			return err
 		}

@@ -15,13 +15,13 @@ type TypeBp struct {
 
 var Bps []TypeBp
 
-func NewBp(bpAddr uintptr, pid int) (*TypeBp, error) {
+func (dbger *TypeDbg) NewBp(bpAddr uintptr, pid int) (*TypeBp, error) {
 	bp := &TypeBp{
 		pid:   pid,
 		addr:  bpAddr,
 		instr: make([]byte, 8),
 	}
-	if err := bp.enableBp(); err != nil {
+	if err := bp.enableBp(dbger); err != nil {
 		return nil, err
 	}
 	Bps = append(Bps, *bp)
@@ -29,14 +29,14 @@ func NewBp(bpAddr uintptr, pid int) (*TypeBp, error) {
 	return bp, nil
 }
 
-func EnableBp(idx int) error {
+func (dbger *TypeDbg) EnableBp(idx int) error {
 	if len(Bps) <= idx {
 		return errors.New("invalid index")
 	}
 	if Bps[idx].isEnable {
 		return errors.New("already enabled")
 	}
-	err := Bps[idx].enableBp()
+	err := Bps[idx].enableBp(dbger)
 	if err != nil {
 		return err
 	}
@@ -44,14 +44,14 @@ func EnableBp(idx int) error {
 	return nil
 }
 
-func DisableBp(idx int) error {
+func (dbger *TypeDbg) DisableBp(idx int) error {
 	if len(Bps) <= idx {
 		return errors.New("invalid index")
 	}
 	if !Bps[idx].isEnable {
 		return errors.New("already disabled")
 	}
-	err := Bps[idx].disableBp()
+	err := Bps[idx].disableBp(dbger)
 	if err != nil {
 		return err
 	}
@@ -59,8 +59,7 @@ func DisableBp(idx int) error {
 	return nil
 }
 
-func (bp *TypeBp) enableBp() error {
-	dbger := &TypeDbg{pid: bp.pid}
+func (bp *TypeBp) enableBp(dbger *TypeDbg) error {
 	if !dbger.isProcessAlive() {
 		return errors.New("process is not alive")
 	}
@@ -94,8 +93,7 @@ func (bp *TypeBp) enableBp() error {
 	return nil
 }
 
-func (bp *TypeBp) disableBp() error {
-	dbger := &TypeDbg{pid: bp.pid}
+func (bp *TypeBp) disableBp(dbger *TypeDbg) error {
 	if !dbger.isProcessAlive() {
 		return errors.New("process is not alive")
 	}

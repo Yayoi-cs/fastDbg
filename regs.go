@@ -48,6 +48,11 @@ func (dbger *TypeDbg) GetRegs(regName string) (uint64, error) {
 	case "ORIG_RAX":
 		return regs.Orig_rax, nil
 	case "RIP":
+		for _, b := range Bps {
+			if uint64(b.addr) == regs.Rip-1 {
+				return regs.Rip - 1, nil
+			}
+		}
 		return regs.Rip, nil
 	case "CS":
 		return regs.Cs, nil
@@ -308,6 +313,11 @@ func (dbger *TypeDbg) GetRip() (uint64, error) {
 	regs, err := dbger.getRegs()
 	if err != nil {
 		return 0, err
+	}
+	for _, b := range Bps {
+		if uint64(b.addr) == regs.Rip-1 {
+			return regs.Rip - 1, nil
+		}
 	}
 	return regs.Rip, nil
 }
