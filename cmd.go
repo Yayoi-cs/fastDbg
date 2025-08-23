@@ -222,8 +222,8 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		} else {
 			for i := 0; i < len(data); i += 8 {
 				if i+8 <= len(data) {
-					Printf("0x%016x: 0x%016x\n", regs.Rsp+uint64(i),
-						binary.LittleEndian.Uint64(data[i:i+8]))
+					Printf("0x%016x: 0x%016x%s\n", regs.Rsp+uint64(i),
+						binary.LittleEndian.Uint64(data[i:i+8]), dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
 				}
 			}
 		}

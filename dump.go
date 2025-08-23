@@ -164,6 +164,8 @@ func (dbger *TypeDbg) cmdDumpQword(a interface{}) error {
 	return nil
 }
 
+var maxDeps int = 0
+
 func (dbger *TypeDbg) addr2some(addr uint64) string {
 	var ret string
 	for _, p := range procMapsDetail {
@@ -186,7 +188,7 @@ func (dbger *TypeDbg) addr2some(addr uint64) string {
 				if err == nil {
 					ok := func() bool {
 						nonZero := false
-						for c := range code {
+						for _, c := range code {
 							if c == 0 {
 								continue
 							}
@@ -203,11 +205,15 @@ func (dbger *TypeDbg) addr2some(addr uint64) string {
 					} else {
 						newAddr := binary.LittleEndian.Uint64(code)
 						ret += fmt.Sprintf("%s->%s0x%016x%s", ColorReset, ColorCyan, newAddr, ColorReset)
-						ret += dbger.addr2some(newAddr)
+						if maxDeps < 4 {
+							ret += dbger.addr2some(newAddr)
+							maxDeps++
+						}
 					}
 				}
 			}
 		}
 	}
+	maxDeps = 0
 	return ret
 }
