@@ -43,3 +43,8 @@ func hLine(msg string) {
 	}
 	fmt.Printf("[" + msg + "]")
 }
+
+func cls() {
+	fmt.Print("\033[2J") // Clear entire screen
+	fmt.Print("\033[H")  // Move cursor to top-left (1,1)
+}

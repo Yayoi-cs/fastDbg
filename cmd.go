@@ -116,8 +116,8 @@ func (dbger *TypeDbg) cmdRun(a interface{}) error {
 			return err
 		}
 	}
-	tmpBps = []uintptr{}
 
+	resolvedN = 0
 	return nil
 }
 
@@ -132,6 +132,14 @@ func (dbger *TypeDbg) cmdContinue(a interface{}) error {
 	}
 
 	_, err = dbger.wait()
+	if err != nil {
+		return err
+	}
+
+	cls()
+
+	dbger.cmdContext(nil)
+
 	return err
 }
 
@@ -170,49 +178,40 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 	var regs *unix.PtraceRegs
 	var err error
 
-	for attempt := 1; attempt <= 10; attempt++ {
-		regs, err = dbger.getRegs()
-		if err == nil {
-			break
-		}
-
-		if err == unix.ESRCH {
-			return errors.New("process exited")
-		}
-
-		Printf("Getting registers failed (attempt %d/10): %v\n", attempt, err)
-
-		if !dbger.isProcessAlive() {
-			return errors.New("process is not alive")
-		}
-
-		time.Sleep(100 * time.Millisecond)
+	regs, err = dbger.getRegs()
+	if err != nil {
+		return err
 	}
 
 	if regs == nil {
-		return fmt.Errorf("failed to get registers after 3 attempts: %v", err)
+		return errors.New("nil registers")
+	}
+
+	rip, err := dbger.GetRip()
+	if err != nil {
+		return err
 	}
 
 	if dbger.arch == 64 {
-		Printf("$rax   : 0x%016x\n", regs.Rax)
-		Printf("$rbx   : 0x%016x\n", regs.Rbx)
-		Printf("$rcx   : 0x%016x\n", regs.Rcx)
-		Printf("$rdx   : 0x%016x\n", regs.Rdx)
-		Printf("$rsp   : 0x%016x\n", regs.Rsp)
-		Printf("$rbp   : 0x%016x\n", regs.Rbp)
-		Printf("$rsi   : 0x%016x\n", regs.Rsi)
-		Printf("$rdi   : 0x%016x\n", regs.Rdi)
-		Printf("$rip   : 0x%016x\n", regs.Rip)
-		Printf("$r8    : 0x%016x\n", regs.R8)
-		Printf("$r9    : 0x%016x\n", regs.R9)
-		Printf("$r10   : 0x%016x\n", regs.R10)
-		Printf("$r11   : 0x%016x\n", regs.R11)
-		Printf("$r12   : 0x%016x\n", regs.R12)
-		Printf("$r13   : 0x%016x\n", regs.R13)
-		Printf("$r14   : 0x%016x\n", regs.R14)
+		Printf("$rax   : 0x%016x%s\n", regs.Rax, dbger.addr2some(regs.Rax))
+		Printf("$rbx   : 0x%016x%s\n", regs.Rbx, dbger.addr2some(regs.Rbx))
+		Printf("$rcx   : 0x%016x%s\n", regs.Rcx, dbger.addr2some(regs.Rcx))
+		Printf("$rdx   : 0x%016x%s\n", regs.Rdx, dbger.addr2some(regs.Rdx))
+		Printf("$rsp   : 0x%016x%s\n", regs.Rsp, dbger.addr2some(regs.Rsp))
+		Printf("$rbp   : 0x%016x%s\n", regs.Rbp, dbger.addr2some(regs.Rbp))
+		Printf("$rsi   : 0x%016x%s\n", regs.Rsi, dbger.addr2some(regs.Rsi))
+		Printf("$rdi   : 0x%016x%s\n", regs.Rdi, dbger.addr2some(regs.Rdi))
+		Printf("$rip   : 0x%016x%s\n", rip, dbger.addr2some(rip))
+		Printf("$r8    : 0x%016x%s\n", regs.R8, dbger.addr2some(regs.R8))
+		Printf("$r9    : 0x%016x%s\n", regs.R9, dbger.addr2some(regs.R9))
+		Printf("$r10   : 0x%016x%s\n", regs.R10, dbger.addr2some(regs.R10))
+		Printf("$r11   : 0x%016x%s\n", regs.R11, dbger.addr2some(regs.R11))
+		Printf("$r12   : 0x%016x%s\n", regs.R12, dbger.addr2some(regs.R12))
+		Printf("$r13   : 0x%016x%s\n", regs.R13, dbger.addr2some(regs.R13))
+		Printf("$r14   : 0x%016x%s\n", regs.R14, dbger.addr2some(regs.R14))
 		Printf("$eflags: 0x%016x\n", regs.Eflags)
 	}
-	fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
+	Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
 		regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
 
 	hLine("stack")
@@ -223,7 +222,7 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		} else {
 			for i := 0; i < len(data); i += 8 {
 				if i+8 <= len(data) {
-					fmt.Printf("0x%x: 0x%016x\n", regs.Rsp+uint64(i),
+					Printf("0x%016x: 0x%016x\n", regs.Rsp+uint64(i),
 						binary.LittleEndian.Uint64(data[i:i+8]))
 				}
 			}
@@ -232,22 +231,7 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 
 	hLine("disassembly")
 	if regs != nil {
-		code, ok := func() ([]byte, bool) {
-			for _, b := range Bps {
-				if uint64(b.addr) == regs.Rip-1 && b.isEnable {
-					code, _ := dbger.GetMemory(32, uintptr(regs.Rip-1))
-					copy(code, b.instr)
-					return code, true
-				}
-			}
-			return nil, false
-		}()
-		if !ok {
-			code, err = dbger.GetMemory(32, uintptr(regs.Rip))
-			disass(code, regs.Rip)
-		} else {
-			disass(code, regs.Rip-1)
-		}
+		dbger.disass(rip, 32)
 	}
 
 	hLine("back trace")
@@ -263,11 +247,6 @@ func (dbger *TypeDbg) cmdVmmap(a interface{}) error {
 
 	if !dbger.isStart {
 		return errors.New("debuggee has not started")
-	}
-
-	err := dbger.loadBase()
-	if err != nil {
-		return err
 	}
 
 	fmt.Println("[start]              [end]              | [size]     | [offset]    | [rwx]  [path]")

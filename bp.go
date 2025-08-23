@@ -16,6 +16,7 @@ type TypeBp struct {
 var Bps []TypeBp
 
 func (dbger *TypeDbg) NewBp(bpAddr uintptr, pid int) (*TypeBp, error) {
+	tmpBps = append(tmpBps, bpAddr)
 	bp := &TypeBp{
 		pid:   pid,
 		addr:  bpAddr,

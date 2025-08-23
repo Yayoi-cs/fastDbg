@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 func (dbger *TypeDbg) cmdDumpByte(a interface{}) error {
@@ -161,4 +162,52 @@ func (dbger *TypeDbg) cmdDumpQword(a interface{}) error {
 	}
 
 	return nil
+}
+
+func (dbger *TypeDbg) addr2some(addr uint64) string {
+	var ret string
+	for _, p := range procMapsDetail {
+		if p.start <= addr && addr < p.end {
+			sym, off, err := dbger.ResolveAddrToSymbol(addr)
+			if err == nil {
+				if off == 0 {
+					ret += fmt.Sprintf("%s<%s>%s", ColorPurple, sym.Name, ColorReset)
+				} else {
+					ret += fmt.Sprintf("%s<%s+0x%x>%s", ColorPurple, sym.Name, off, ColorReset)
+				}
+			}
+			if strings.Contains(p.rwx, "x") {
+				instr, err := dbger.disassOne(uintptr(addr))
+				if err == nil {
+					ret += fmt.Sprintf("%s->%s%s%s", ColorReset, ColorRed, *instr, ColorReset)
+				}
+			} else {
+				code, err := dbger.GetMemory(8, uintptr(addr))
+				if err == nil {
+					ok := func() bool {
+						nonZero := false
+						for c := range code {
+							if c == 0 {
+								continue
+							}
+							nonZero = true
+							if c < 0x20 || c > 0x7e {
+								return false
+							}
+						}
+
+						return nonZero
+					}()
+					if ok {
+						ret += fmt.Sprintf("%s->%s\"%s\"%s", ColorReset, ColorBlue, string(code), ColorReset)
+					} else {
+						newAddr := binary.LittleEndian.Uint64(code)
+						ret += fmt.Sprintf("%s->%s0x%016x%s", ColorReset, ColorCyan, newAddr, ColorReset)
+						ret += dbger.addr2some(newAddr)
+					}
+				}
+			}
+		}
+	}
+	return ret
 }
