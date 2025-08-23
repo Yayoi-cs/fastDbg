@@ -23,7 +23,7 @@ type LibraryRange struct {
 type rootStruct struct {
 	name string
 	base uint64 // if no-pie, base=0, elif pie, read base from /proc/pid/maps
-	end  uint64 // ライブラリの終端アドレス
+	end  uint64
 	root *symTree
 }
 
@@ -33,7 +33,7 @@ type symTree struct {
 }
 
 var libRoots []rootStruct
-var libraryRanges []LibraryRange // ソート済みライブラリ範囲（高速検索用）
+var libraryRanges []LibraryRange
 
 func addTreeToLib(libIndex int, ptr uint64, name *string) {
 	if libIndex >= len(libRoots) {
@@ -90,14 +90,13 @@ func addr2NameFromLibExact(libIndex int, ptr uint64) (*string, error) {
 	return finalNode.str, nil
 }
 
-// ライブラリ内で最も近いシンボルを検索（オフセット対応）
 func findNearestSymbolInLib(libIndex int, relativeAddr uint64) (*string, uint64) {
 	if libIndex >= len(libRoots) || symTable == nil {
 		return nil, 0
 	}
 
 	var bestSymbol *string
-	var bestOffset uint64 = ^uint64(0) // 最大値で初期化
+	var bestOffset uint64 = ^uint64(0)
 
 	for _, sym := range symTable.symbols {
 		if sym.LibIndex != libIndex {
@@ -106,11 +105,9 @@ func findNearestSymbolInLib(libIndex int, relativeAddr uint64) (*string, uint64)
 
 		if sym.Addr <= relativeAddr {
 			offset := relativeAddr - sym.Addr
-			// サイズチェック
 			if sym.Size > 0 && offset >= sym.Size {
 				continue
 			}
-			// より近いシンボルを選択
 			if offset < bestOffset {
 				bestOffset = offset
 				bestSymbol = &sym.Name
@@ -124,9 +121,7 @@ func findNearestSymbolInLib(libIndex int, relativeAddr uint64) (*string, uint64)
 	return nil, 0
 }
 
-// 効率的なライブラリ特定（O(log L)）
 func findLibraryForAddress(addr uint64) int {
-	// バイナリサーチでライブラリを特定
 	idx := sort.Search(len(libraryRanges), func(i int) bool {
 		return libraryRanges[i].end > addr
 	})
@@ -138,28 +133,24 @@ func findLibraryForAddress(addr uint64) int {
 		}
 	}
 
-	// フォールバック検索
 	for i := range libRoots {
 		if libRoots[i].base > 0 {
 			if addr >= libRoots[i].base && (libRoots[i].end == 0 || addr < libRoots[i].end) {
 				return i
 			}
-		} else if i == 0 { // メインプログラム
+		} else if i == 0 {
 			return 0
 		}
 	}
 	return -1
 }
 
-// 高効率アドレス→名前解決（完全一致・オフセット統一処理）
 func addr2Name(addr uint64) (*string, uint64, error) {
-	// 1. ライブラリ特定 O(log L)
 	libIndex := findLibraryForAddress(addr)
 	if libIndex < 0 {
 		return nil, 0, errors.New("address not found in any library")
 	}
 
-	// 2. 相対アドレス計算
 	relativeAddr := addr
 	if libRoots[libIndex].base > 0 {
 		if addr >= libRoots[libIndex].base {
@@ -169,12 +160,10 @@ func addr2Name(addr uint64) (*string, uint64, error) {
 		}
 	}
 
-	// 3. 完全一致検索
 	if namePtr, err := addr2NameFromLibExact(libIndex, relativeAddr); err == nil && namePtr != nil {
 		return namePtr, 0, nil
 	}
 
-	// 4. オフセット検索
 	bestSymbol, bestOffset := findNearestSymbolInLib(libIndex, relativeAddr)
 	if bestSymbol != nil {
 		return bestSymbol, bestOffset, nil
@@ -343,7 +332,6 @@ func (dbger *TypeDbg) getBaseAddress(pid int, libPath string) (uint64, error) {
 	return 0, errors.New("base address not found")
 }
 
-// ライブラリの終端アドレスを計算
 func calculateLibraryEnd(libIndex int) uint64 {
 	if libIndex >= len(libRoots) || symTable == nil {
 		return 0
@@ -361,7 +349,6 @@ func calculateLibraryEnd(libIndex int) uint64 {
 		}
 	}
 
-	// 最小でも64KB
 	if maxAddr-libRoots[libIndex].base < 65536 {
 		maxAddr = libRoots[libIndex].base + 65536
 	}
@@ -369,7 +356,6 @@ func calculateLibraryEnd(libIndex int) uint64 {
 	return maxAddr
 }
 
-// ライブラリ範囲を構築（効率的な検索用）
 func buildLibraryRanges() {
 	libraryRanges = libraryRanges[:0]
 
@@ -384,7 +370,6 @@ func buildLibraryRanges() {
 		})
 	}
 
-	// 範囲でソート（バイナリサーチ用）
 	sort.Slice(libraryRanges, func(i, j int) bool {
 		return libraryRanges[i].start < libraryRanges[j].start
 	})
@@ -601,13 +586,11 @@ func (dbger *TypeDbg) ResolveAddrToSymbol(addr uint64) (*Symbol, uint64, error) 
 		return nil, 0, errors.New("symbols not loaded")
 	}
 
-	// 階層的検索：効率的なライブラリ特定 + trie検索
 	namePtr, offset, err := addr2Name(addr)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	// シンボル情報を取得
 	if sym, exists := symTable.nameToSymbol[*namePtr]; exists {
 		return sym, offset, nil
 	}
