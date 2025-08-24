@@ -26,6 +26,7 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(context|CONTEXT)\s*$`:                                                                                   (*TypeDbg).cmdContext,
 	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                                                              (*TypeDbg).cmdVmmap,
 	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                                                                    (*TypeDbg).cmdSym,
+	`^\s*(got|GOT)\s*$`:                                                                                           (*TypeDbg).cmdGot,
 	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:         (*TypeDbg).cmdDumpByte,
 	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpDword,
 	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpQword,
@@ -35,14 +36,12 @@ func (dbger *TypeDbg) cmdExec(req string) error {
 	for rgx, fnc := range cmd {
 		regex, err := regexp.Compile(rgx)
 		if err != nil {
-
 			return err
 		}
 
 		if regex.MatchString(req) {
 			m := regex.FindStringSubmatch(req)
 			err = fnc(dbger, m)
-
 			return err
 		}
 	}
@@ -53,7 +52,6 @@ var tmpBps []uintptr
 var tmpPieBps []uintptr
 
 func (dbger *TypeDbg) cmdBreak(a interface{}) error {
-
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -75,7 +73,6 @@ func (dbger *TypeDbg) cmdBreak(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdBreakPie(a interface{}) error {
-
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -315,6 +312,129 @@ func (dbger *TypeDbg) cmdSym(a interface{}) error {
 		return errors.New("invalid arguments")
 	}
 	return dbger.ListSymbols(args[2])
+}
+
+func (dbger *TypeDbg) cmdGot(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	pltEntries, gotEntries, err := dbger.AnalyzePLTGOTInfo()
+	if err != nil {
+		return fmt.Errorf("failed to analyze PLT/GOT: %v", err)
+	}
+
+	printf := func(format string, args ...interface{}) {
+		fmt.Printf(format, args...)
+	}
+
+	printf("Name                        | PLT            | GOT            | GOT value     \n")
+	printf("--------------------------------------------------- .rela.plt ---------------------------------------------------\n")
+
+	pltMap := make(map[string]PLTEntry)
+	for _, plt := range pltEntries {
+		pltMap[plt.OriginalName] = plt
+	}
+
+	gotMap := make(map[string]GOTEntry)
+	for _, got := range gotEntries {
+		if got.Name != "" && !strings.HasPrefix(got.Name, "GOT[") {
+			gotMap[got.Name] = got
+		}
+	}
+
+	processed := make(map[string]bool)
+
+	for _, plt := range pltEntries {
+		if processed[plt.OriginalName] {
+			continue
+		}
+		processed[plt.OriginalName] = true
+
+		pltAddr := fmt.Sprintf("0x%012x", plt.Address)
+		gotAddr := "Not found"
+		gotValue := "Not found"
+
+		if got, exists := gotMap[plt.OriginalName]; exists {
+			gotAddr = fmt.Sprintf("0x%012x", got.Address)
+
+			if got.Value != 0 {
+				resolved := ""
+				if sym, _, err := dbger.ResolveAddrToSymbol(got.Value); err == nil {
+					resolved = fmt.Sprintf(" <%s>", sym.Name)
+				}
+				gotValue = fmt.Sprintf("0x%012x%s", got.Value, resolved)
+			} else {
+				gotValue = "0x000000000000"
+			}
+		} else {
+			for _, got := range gotEntries {
+				if strings.HasPrefix(got.Name, "GOT[") {
+					data, err := dbger.GetMemory(8, uintptr(got.Address))
+					if err == nil {
+						value := binary.LittleEndian.Uint64(data)
+						if value != 0 {
+							if sym, _, err := dbger.ResolveAddrToSymbol(value); err == nil {
+								if strings.Contains(sym.Name, plt.OriginalName) {
+									gotAddr = fmt.Sprintf("0x%012x", got.Address)
+									resolved := fmt.Sprintf(" <%s>", sym.Name)
+									gotValue = fmt.Sprintf("0x%012x%s", value, resolved)
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+
+		printf("%-27s | %s | %s | %s\n", plt.OriginalName, pltAddr, gotAddr, gotValue)
+	}
+
+	printf("--------------------------------------------------- .rela.dyn ---------------------------------------------------\n")
+
+	for _, got := range gotEntries {
+		if got.Name == "" || strings.HasPrefix(got.Name, "GOT[") {
+			continue
+		}
+
+		if processed[got.Name] {
+			continue
+		}
+		processed[got.Name] = true
+
+		pltAddr := "  Not found   "
+		if plt, exists := pltMap[got.Name]; exists {
+			pltAddr = fmt.Sprintf("0x%012x", plt.Address)
+		}
+
+		gotAddr := fmt.Sprintf("0x%012x", got.Address)
+		gotValue := "0x000000000000"
+
+		if got.Value != 0 {
+			resolved := ""
+			if sym, _, err := dbger.ResolveAddrToSymbol(got.Value); err == nil {
+				resolved = fmt.Sprintf(" <%s>", sym.Name)
+			}
+			gotValue = fmt.Sprintf("0x%012x%s", got.Value, resolved)
+		} else {
+			data, err := dbger.GetMemory(8, uintptr(got.Address))
+			if err == nil {
+				value := binary.LittleEndian.Uint64(data)
+				if value != 0 {
+					resolved := ""
+					if sym, _, err := dbger.ResolveAddrToSymbol(value); err == nil {
+						resolved = fmt.Sprintf(" <%s>", sym.Name)
+					}
+					gotValue = fmt.Sprintf("0x%012x%s", value, resolved)
+				}
+			}
+		}
+
+		printf("%-27s | %s | %s | %s\n", got.Name, pltAddr, gotAddr, gotValue)
+	}
+
+	return nil
 }
 
 func (dbger *TypeDbg) cmdCmd(a interface{}) error {

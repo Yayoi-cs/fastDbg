@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"debug/elf"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -22,7 +23,7 @@ type LibraryRange struct {
 
 type rootStruct struct {
 	name string
-	base uint64 // if no-pie, base=0, elif pie, read base from /proc/pid/maps
+	base uint64
 	end  uint64
 	root *symTree
 }
@@ -30,6 +31,38 @@ type rootStruct struct {
 type symTree struct {
 	str *string
 	p   map[uint8]*symTree
+}
+
+type PLTEntry struct {
+	Address      uint64
+	Name         string
+	OriginalName string
+	Offset       uint64
+	AddEnd       int64
+	IsSynthetic  bool
+}
+
+type GOTEntry struct {
+	Address uint64
+	Name    string
+	Value   uint64
+}
+
+type ELFSymbol struct {
+	NameOffset uint32
+	Info       uint8
+	Other      uint8
+	Section    elf.SectionIndex
+	Value      uint64
+	Size       uint64
+}
+
+type Relocation struct {
+	Offset      uint64
+	Info        uint64
+	SymbolIndex uint32
+	Type        uint32
+	Addend      int64
 }
 
 var libRoots []rootStruct
@@ -375,6 +408,264 @@ func buildLibraryRanges() {
 	})
 }
 
+func getByteOrder(file *elf.File) binary.ByteOrder {
+	if file.Data == elf.ELFDATA2LSB {
+		return binary.LittleEndian
+	}
+	return binary.BigEndian
+}
+
+func parseSymbol(data []byte, file *elf.File) ELFSymbol {
+	var symbol ELFSymbol
+	byteOrder := getByteOrder(file)
+
+	if file.Class == elf.ELFCLASS64 {
+		symbol.NameOffset = byteOrder.Uint32(data[0:4])
+		symbol.Info = data[4]
+		symbol.Other = data[5]
+		symbol.Section = elf.SectionIndex(byteOrder.Uint16(data[6:8]))
+		symbol.Value = byteOrder.Uint64(data[8:16])
+		symbol.Size = byteOrder.Uint64(data[16:24])
+	} else {
+		symbol.NameOffset = byteOrder.Uint32(data[0:4])
+		symbol.Value = uint64(byteOrder.Uint32(data[4:8]))
+		symbol.Size = uint64(byteOrder.Uint32(data[8:12]))
+		symbol.Info = data[12]
+		symbol.Other = data[13]
+		symbol.Section = elf.SectionIndex(byteOrder.Uint16(data[14:16]))
+	}
+
+	return symbol
+}
+
+func getSymbolName(nameOffset uint32, dynStrings []byte) string {
+	if nameOffset >= uint32(len(dynStrings)) {
+		return ""
+	}
+
+	end := nameOffset
+	for end < uint32(len(dynStrings)) && dynStrings[end] != 0 {
+		end++
+	}
+
+	return string(dynStrings[nameOffset:end])
+}
+
+func parseRelocations(section *elf.Section, file *elf.File) ([]Relocation, error) {
+	data, err := section.Data()
+	if err != nil {
+		return nil, err
+	}
+
+	var relocations []Relocation
+	var entrySize int
+
+	if section.Type == elf.SHT_RELA {
+		if file.Class == elf.ELFCLASS64 {
+			entrySize = 24
+		} else {
+			entrySize = 12
+		}
+	} else if section.Type == elf.SHT_REL {
+		if file.Class == elf.ELFCLASS64 {
+			entrySize = 16
+		} else {
+			entrySize = 8
+		}
+	}
+
+	entryCount := len(data) / entrySize
+	byteOrder := getByteOrder(file)
+
+	for i := 0; i < entryCount; i++ {
+		entryData := data[i*entrySize : (i+1)*entrySize]
+		var reloc Relocation
+
+		if file.Class == elf.ELFCLASS64 {
+			reloc.Offset = byteOrder.Uint64(entryData[0:8])
+			reloc.Info = byteOrder.Uint64(entryData[8:16])
+			reloc.SymbolIndex = uint32(reloc.Info >> 32)
+			reloc.Type = uint32(reloc.Info & 0xffffffff)
+
+			if section.Type == elf.SHT_RELA && len(entryData) >= 24 {
+				reloc.Addend = int64(byteOrder.Uint64(entryData[16:24]))
+			}
+		} else {
+			reloc.Offset = uint64(byteOrder.Uint32(entryData[0:4]))
+			reloc.Info = uint64(byteOrder.Uint32(entryData[4:8]))
+			reloc.SymbolIndex = uint32(reloc.Info >> 8)
+			reloc.Type = uint32(reloc.Info & 0xff)
+
+			if section.Type == elf.SHT_RELA && len(entryData) >= 12 {
+				reloc.Addend = int64(int32(byteOrder.Uint32(entryData[8:12])))
+			}
+		}
+
+		relocations = append(relocations, reloc)
+	}
+
+	return relocations, nil
+}
+
+func getPLTEntrySize(machine elf.Machine) int {
+	switch machine {
+	case elf.EM_X86_64:
+		return 16
+	case elf.EM_386:
+		return 16
+	case elf.EM_AARCH64:
+		return 16
+	case elf.EM_ARM:
+		return 12
+	default:
+		return 16
+	}
+}
+
+func loadDynamicSymbols(file *elf.File) ([]ELFSymbol, []byte, error) {
+	dynsymSection := file.Section(".dynsym")
+	if dynsymSection == nil {
+		return nil, nil, fmt.Errorf(".dynsym section not found")
+	}
+
+	dynstrSection := file.Section(".dynstr")
+	if dynstrSection == nil {
+		return nil, nil, fmt.Errorf(".dynstr section not found")
+	}
+
+	dynstrData, err := dynstrSection.Data()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read .dynstr: %w", err)
+	}
+
+	dynsymData, err := dynsymSection.Data()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read .dynsym: %w", err)
+	}
+
+	var symbolSize int
+	if file.Class == elf.ELFCLASS64 {
+		symbolSize = 24
+	} else {
+		symbolSize = 16
+	}
+
+	symbolCount := len(dynsymData) / symbolSize
+	dynSymbols := make([]ELFSymbol, symbolCount)
+
+	for i := 0; i < symbolCount; i++ {
+		symbolData := dynsymData[i*symbolSize : (i+1)*symbolSize]
+		symbol := parseSymbol(symbolData, file)
+		dynSymbols[i] = symbol
+	}
+
+	return dynSymbols, dynstrData, nil
+}
+
+func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
+	file, err := elf.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	dynSymbols, dynStrings, err := loadDynamicSymbols(file)
+	if err != nil {
+		return err
+	}
+
+	pltSection := file.Section(".plt.sec")
+	if pltSection == nil {
+		pltSection = file.Section(".plt")
+	}
+
+	if pltSection != nil {
+		relPltSection := file.Section(".rela.plt")
+		if relPltSection == nil {
+			relPltSection = file.Section(".rel.plt")
+		}
+
+		if relPltSection != nil {
+			relocations, err := parseRelocations(relPltSection, file)
+			if err == nil {
+				pltEntrySize := getPLTEntrySize(file.Machine)
+				isModernPLT := (pltSection.Name == ".plt.sec")
+
+				for i, reloc := range relocations {
+					if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
+						continue
+					}
+
+					var pltEntryAddr uint64
+					if isModernPLT {
+						pltEntryAddr = pltSection.Addr + uint64(i*pltEntrySize)
+					} else {
+						pltEntryAddr = pltSection.Addr + uint64((i+1)*pltEntrySize)
+					}
+
+					symbol := dynSymbols[reloc.SymbolIndex]
+					symbolName := getSymbolName(symbol.NameOffset, dynStrings)
+					if symbolName == "" {
+						continue
+					}
+
+					pltName := symbolName + "@plt"
+					if reloc.Addend != 0 {
+						pltName += fmt.Sprintf("+0x%x", reloc.Addend)
+					}
+
+					pltSym := Symbol{
+						Name:     pltName,
+						Addr:     pltEntryAddr - libRoots[0].base,
+						Size:     uint64(pltEntrySize),
+						Type:     elf.STT_FUNC,
+						Bind:     elf.STB_GLOBAL,
+						Section:  0,
+						LibIndex: 0,
+					}
+					symTable.AddSymbol(pltSym)
+				}
+			}
+		}
+	}
+
+	gotSection := file.Section(".got.plt")
+	if gotSection == nil {
+		gotSection = file.Section(".got")
+	}
+
+	if gotSection != nil {
+		gotData, err := gotSection.Data()
+		if err == nil {
+			var entrySize int
+			if file.Class == elf.ELFCLASS64 {
+				entrySize = 8
+			} else {
+				entrySize = 4
+			}
+
+			entryCount := len(gotData) / entrySize
+			for i := 0; i < entryCount; i++ {
+				gotAddr := gotSection.Addr + uint64(i*entrySize)
+				gotName := fmt.Sprintf("GOT[%d]", i)
+
+				gotSym := Symbol{
+					Name:     gotName,
+					Addr:     gotAddr - libRoots[0].base,
+					Size:     uint64(entrySize),
+					Type:     elf.STT_OBJECT,
+					Bind:     elf.STB_GLOBAL,
+					Section:  0,
+					LibIndex: 0,
+				}
+				symTable.AddSymbol(gotSym)
+			}
+		}
+	}
+
+	return nil
+}
+
 func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 	if dbger.path == "" {
 		return errors.New("invalid filename")
@@ -403,6 +694,10 @@ func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 
 	if err := dbger.loadSymbolsFromFile(dbger.path, 0); err != nil {
 		return fmt.Errorf("failed to load main symbols: %v", err)
+	}
+
+	if err := dbger.analyzePLTGOT(dbger.path); err != nil {
+		Printf("Warning: failed to analyze PLT/GOT: %v\n", err)
 	}
 
 	libs, err := dbger.ldd()
@@ -800,4 +1095,147 @@ func (dbger *TypeDbg) resolveSyms(addr uint64) {
 	} else {
 		Printf("0x%016x: %s+0x%x%s\n", addr, sym.Name, offset, libName)
 	}
+}
+
+func (dbger *TypeDbg) AnalyzePLTGOTInfo() ([]PLTEntry, []GOTEntry, error) {
+	if dbger.path == "" {
+		return nil, nil, errors.New("invalid filename")
+	}
+
+	file, err := elf.Open(dbger.path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer file.Close()
+
+	dynSymbols, dynStrings, err := loadDynamicSymbols(file)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var pltEntries []PLTEntry
+	var gotEntries []GOTEntry
+
+	pltSection := file.Section(".plt.sec")
+	if pltSection == nil {
+		pltSection = file.Section(".plt")
+	}
+
+	if pltSection != nil {
+		relPltSection := file.Section(".rela.plt")
+		if relPltSection == nil {
+			relPltSection = file.Section(".rel.plt")
+		}
+
+		if relPltSection != nil {
+			relocations, err := parseRelocations(relPltSection, file)
+			if err == nil {
+				pltEntrySize := getPLTEntrySize(file.Machine)
+				isModernPLT := (pltSection.Name == ".plt.sec")
+
+				for i, reloc := range relocations {
+					if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
+						continue
+					}
+
+					var pltEntryAddr uint64
+					if isModernPLT {
+						pltEntryAddr = pltSection.Addr + uint64(i*pltEntrySize)
+					} else {
+						pltEntryAddr = pltSection.Addr + uint64((i+1)*pltEntrySize)
+					}
+
+					symbol := dynSymbols[reloc.SymbolIndex]
+					symbolName := getSymbolName(symbol.NameOffset, dynStrings)
+					if symbolName == "" {
+						continue
+					}
+
+					pltName := symbolName + "@plt"
+					if reloc.Addend != 0 {
+						pltName += fmt.Sprintf("+0x%x", reloc.Addend)
+					}
+
+					entry := PLTEntry{
+						Address:      pltEntryAddr + libRoots[0].base,
+						Name:         pltName,
+						OriginalName: symbolName,
+						Offset:       pltEntryAddr - pltSection.Addr,
+						AddEnd:       reloc.Addend,
+						IsSynthetic:  true,
+					}
+					pltEntries = append(pltEntries, entry)
+				}
+			}
+		}
+	}
+
+	gotSection := file.Section(".got.plt")
+	if gotSection == nil {
+		gotSection = file.Section(".got")
+	}
+
+	if gotSection != nil {
+		gotData, err := gotSection.Data()
+		if err == nil {
+			var entrySize int
+			if file.Class == elf.ELFCLASS64 {
+				entrySize = 8
+			} else {
+				entrySize = 4
+			}
+
+			entryCount := len(gotData) / entrySize
+			byteOrder := getByteOrder(file)
+
+			for i := 0; i < entryCount; i++ {
+				entryData := gotData[i*entrySize : (i+1)*entrySize]
+				var value uint64
+
+				if entrySize == 8 {
+					value = byteOrder.Uint64(entryData)
+				} else {
+					value = uint64(byteOrder.Uint32(entryData))
+				}
+
+				entry := GOTEntry{
+					Address: gotSection.Addr + uint64(i*entrySize) + libRoots[0].base,
+					Name:    fmt.Sprintf("GOT[%d]", i),
+					Value:   value,
+				}
+				gotEntries = append(gotEntries, entry)
+			}
+		}
+	}
+
+	relDynSection := file.Section(".rela.dyn")
+	if relDynSection == nil {
+		relDynSection = file.Section(".rel.dyn")
+	}
+
+	if relDynSection != nil {
+		dynRelocations, err := parseRelocations(relDynSection, file)
+		if err == nil {
+			for _, reloc := range dynRelocations {
+				if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
+					continue
+				}
+
+				symbol := dynSymbols[reloc.SymbolIndex]
+				symbolName := getSymbolName(symbol.NameOffset, dynStrings)
+				if symbolName == "" {
+					continue
+				}
+
+				for i := range gotEntries {
+					if gotEntries[i].Address-libRoots[0].base == reloc.Offset {
+						gotEntries[i].Name = symbolName
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return pltEntries, gotEntries, nil
 }
