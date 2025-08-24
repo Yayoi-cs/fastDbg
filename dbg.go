@@ -289,6 +289,9 @@ func (dbger *TypeDbg) wait() (unix.WaitStatus, error) {
 		dbger.isStart = false
 		return ws, nil
 	}
+	if ws.CoreDump() {
+		Printf("Segmentation fault (SIGSEGV): %d\n", dbger.pid)
+	}
 
 	if ws.Stopped() {
 		rip, err := dbger.GetRip()
@@ -338,7 +341,7 @@ func (dbger *TypeDbg) Continue() error {
 		return nil, false
 	}(rip)
 
-	if ok && bp.isEnable {
+	if ok {
 		if err := bp.disableBp(dbger); err != nil {
 			return err
 		}
@@ -373,9 +376,55 @@ func (dbger *TypeDbg) stop() error {
 }
 
 func (dbger *TypeDbg) Step() error {
-	return doSyscallErr(dbger.rpc, func() error {
-		return unix.PtraceSingleStep(dbger.pid)
-	})
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	rip, err := dbger.GetRip()
+	if err != nil {
+		return err
+	}
+
+	bp, ok := func(rip uint64) (*TypeBp, bool) {
+		for _, b := range Bps {
+			if b.addr == uintptr(rip-1) && b.isEnable {
+				return &b, true
+			}
+		}
+		return nil, false
+	}(rip)
+
+	if ok {
+		if err := bp.disableBp(dbger); err != nil {
+			return err
+		}
+		if err := dbger.SetRip(rip - 1); err != nil {
+			return err
+		}
+		err = doSyscallErr(dbger.rpc, func() error {
+			return unix.PtraceSingleStep(dbger.pid)
+		})
+		if err != nil {
+			return err
+		}
+		if _, err = dbger.wait(); err != nil {
+			return err
+		}
+
+		err = bp.enableBp(dbger)
+		if err != nil {
+			return err
+		}
+	} else {
+		return doSyscallErr(dbger.rpc, func() error {
+			return unix.PtraceSingleStep(dbger.pid)
+		})
+		if _, err = dbger.wait(); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func (dbger *TypeDbg) formatPtraceError(operation string, err error) error {
