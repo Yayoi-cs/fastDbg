@@ -248,7 +248,7 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 
 	defer func() {
 		file.Close()
-		//os.Remove(tempFile)
+		os.Remove(tempFile)
 	}()
 
 	code, err := dbger.GetMemory(uint(n*8), uintptr(addr))
@@ -263,6 +263,76 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 				binary.LittleEndian.Uint64(code[i:i+8]), dbger.addr2some(binary.LittleEndian.Uint64(code[i:i+8])), ColorReset)
 		}
 	}
+	file.Close()
+
+	cmd := exec.Command("less", "-SR", tempFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// heap
+
+func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
+	addr, sz, ok := func() (uint64, uint64, bool) {
+		for _, p := range procMapsDetail {
+			if strings.Contains(p.path, "heap") {
+				return p.start, p.end - p.start, true
+			}
+		}
+		return 0, 0, false
+	}()
+	if !ok {
+		return errors.New("heap not found")
+	}
+
+	code, err := dbger.GetMemory(uint(sz), uintptr(addr))
+	if err != nil {
+		return err
+	}
+
+	tempFile := fmt.Sprintf("/tmp/fastDbg_%d_%d", os.Getpid(), time.Now().Unix())
+	file, err := os.Create(tempFile)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		file.Close()
+		os.Remove(tempFile)
+	}()
+
+	var c int = 0
+	for i := uint64(0); i < uint64(len(code)); {
+		chkSz := binary.LittleEndian.Uint64(code[i+8 : i+16])
+		chkSz = chkSz & 0xfffffffffffffff8
+		color := colorArray[c%len(colorArray)]
+		if i+chkSz < uint64(len(code)) {
+			for j := uint64(0); j < chkSz; j += 0x10 {
+				fmt.Fprintf(file, "%s0x%016x|+0x%05x|+0x%05x: %016x %016x | ", color, addr+i+j, j, i+j,
+					binary.LittleEndian.Uint64(code[i+j:i+j+8]),
+					binary.LittleEndian.Uint64(code[i+j+8:i+j+8+8]))
+				for k := range uint64(0x10) {
+					b := code[i+j+k]
+					if b >= 32 && b <= 126 {
+						fmt.Fprintf(file, "%c", b)
+					} else {
+						fmt.Fprintf(file, ".")
+					}
+				}
+				fmt.Fprintf(file, " |%s\n", ColorReset)
+			}
+		}
+		i += chkSz
+		c++
+	}
+
 	file.Close()
 
 	cmd := exec.Command("less", "-SR", tempFile)

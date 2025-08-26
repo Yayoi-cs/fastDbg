@@ -28,6 +28,7 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                                                              (*TypeDbg).cmdVmmap,
 	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                                                                    (*TypeDbg).cmdSym,
 	`^\s*(got|GOT)\s*$`:                                                                                           (*TypeDbg).cmdGot,
+	`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`:                                                                   (*TypeDbg).cmdVisualHeap,
 	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                      (*TypeDbg).cmdDumpByte,
 	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpDword,
 	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpQword,

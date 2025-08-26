@@ -19,6 +19,15 @@ const (
 	ColorBold   = "\033[1m"
 )
 
+var colorArray []string = []string{
+	ColorRed,
+	ColorGreen,
+	ColorYellow,
+	ColorBlue,
+	ColorPurple,
+	ColorCyan,
+}
+
 func LogError(msg string, a ...interface{}) {
 	fmt.Printf("%s[ERROR]%s %s\n", ColorRed, ColorReset, fmt.Sprintf(msg, a...))
 }
