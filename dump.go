@@ -4,8 +4,11 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func (dbger *TypeDbg) cmdDumpByte(a interface{}) error {
@@ -216,4 +219,60 @@ func (dbger *TypeDbg) addr2some(addr uint64) string {
 	}
 	maxDeps = 0
 	return ret
+}
+
+func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 3 {
+		return errors.New("invalid arguments")
+	}
+
+	var addr uint64
+	var n uint64 = 0x80
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	if len(args) > 3 && args[3] != "" {
+		n, err = strconv.ParseUint(args[3], 0, 64)
+		if err != nil {
+			return err
+		}
+	}
+
+	tempFile := fmt.Sprintf("/tmp/fastDbg_%d_%d", os.Getpid(), time.Now().Unix())
+	file, err := os.Create(tempFile)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		file.Close()
+		//os.Remove(tempFile)
+	}()
+
+	code, err := dbger.GetMemory(uint(n*8), uintptr(addr))
+	if err != nil {
+		return err
+	}
+
+	for i := 0; i < len(code); i += 8 {
+		if i+8 < len(code) {
+			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)|%s%016x%s%s\n",
+				ColorBlue, addr+uint64(i), ColorReset, i, i/8, ColorCyan,
+				binary.LittleEndian.Uint64(code[i:i+8]), dbger.addr2some(binary.LittleEndian.Uint64(code[i:i+8])), ColorReset)
+		}
+	}
+	file.Close()
+
+	cmd := exec.Command("less", "-SR", tempFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
+	return nil
 }

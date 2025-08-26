@@ -969,7 +969,7 @@ func (dbger *TypeDbg) ListSymbols(filter string) error {
 		}
 		file.Close()
 
-		cmd := exec.Command("less", "-S", tempFile)
+		cmd := exec.Command("less", "-SR", tempFile)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr

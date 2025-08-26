@@ -52,6 +52,5 @@ func (dbger *TypeDbg) Interactive() {
 		if err != nil {
 			LogError(err.Error())
 		}
-		dbger.Reload()
 	}
 }

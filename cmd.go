@@ -16,7 +16,7 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(b|break|B|BREAK)\s+(pie|PIE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                              (*TypeDbg).cmdBreakPie,
 	`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                                                   (*TypeDbg).cmdEnable,
 	`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                                                  (*TypeDbg).cmdDisable,
-	`^\s*(disass)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDisass,
+	`^\s*(disass)(\s+(0[xx][0-9a-fa-f]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDisass,
 	`^\s*(r|run|R|RUN)(?:\s+(.+))?$`:                                                                              (*TypeDbg).cmdRun,
 	`^\s*(s|start|S|START)(?:\s+(.+))?$`:                                                                          (*TypeDbg).cmdStart,
 	`^\s*(regs)(?:\s+(.+))?$`:                                                                                     (*TypeDbg).cmdRegs,
@@ -24,12 +24,14 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`:                                                                   (*TypeDbg).cmdContinue,
 	`^\s*(step|STEP)\s*$`:                                                                                         (*TypeDbg).cmdStep,
 	`^\s*(context|CONTEXT)\s*$`:                                                                                   (*TypeDbg).cmdContext,
+	`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                                   (*TypeDbg).cmdStack,
 	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                                                              (*TypeDbg).cmdVmmap,
 	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                                                                    (*TypeDbg).cmdSym,
 	`^\s*(got|GOT)\s*$`:                                                                                           (*TypeDbg).cmdGot,
-	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:         (*TypeDbg).cmdDumpByte,
-	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpDword,
-	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDumpQword,
+	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                      (*TypeDbg).cmdDumpByte,
+	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpDword,
+	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpQword,
+	`^\s*(tel|telescope|TEL|TELESCOPE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdTelescope,
 }
 
 func (dbger *TypeDbg) cmdExec(req string) error {
@@ -209,6 +211,7 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 	if !dbger.isStart {
 		return errors.New("debuggee has not started")
 	}
+	dbger.Reload()
 
 	hLine("registers")
 
@@ -259,11 +262,14 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		if err != nil {
 			LogError("Error while getting stack memory: %v", err)
 		} else {
-			fmt.Printf("$rsp:")
+			fmt.Printf("$rsp>")
 			for i := 0; i < len(data); i += 8 {
 				if i+8 <= len(data) {
-					Printf("0x%016x: 0x%016x%s\n", regs.Rsp+uint64(i),
-						binary.LittleEndian.Uint64(data[i:i+8]), dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
+					if i != 0 {
+						fmt.Printf("     ")
+					}
+					fmt.Printf("%s0x%016x%s: %s0x%016x%s%s\n", ColorBlue, regs.Rsp+uint64(i), ColorReset, ColorCyan,
+						binary.LittleEndian.Uint64(data[i:i+8]), ColorReset, dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
 				}
 			}
 		}
@@ -275,6 +281,38 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 	}
 
 	hLine("back trace")
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdStack(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	var sz uint64 = 8
+	var err error
+	if len(args[2]) != 0 {
+		sz, err = strconv.ParseUint(args[3], 0, 64)
+		if err != nil {
+			return err
+		}
+	}
+	rsp, err := dbger.GetRsp()
+	if err != nil {
+		return err
+	}
+	data, err := dbger.GetMemory(uint(sz*8), uintptr(rsp))
+	if err != nil {
+		LogError("Error while getting stack memory: %v", err)
+	} else {
+		for i := 0; i < len(data); i += 8 {
+			if i+8 <= len(data) {
+				fmt.Printf("%s0x%016x%s: %s0x%016x%s%s\n", ColorBlue, rsp+uint64(i), ColorReset, ColorCyan,
+					binary.LittleEndian.Uint64(data[i:i+8]), ColorReset, dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
+			}
+		}
+	}
 
 	return nil
 }
@@ -329,7 +367,7 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 	}
 
 	printf("Name                        | PLT            | GOT            | GOT value     \n")
-	printf("--------------------------------------------------- .rela.plt ---------------------------------------------------\n")
+	hLine(".rela.plt")
 
 	pltMap := make(map[string]PLTEntry)
 	for _, plt := range pltEntries {
@@ -391,7 +429,7 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 		printf("%-27s | %s | %s | %s\n", plt.OriginalName, pltAddr, gotAddr, gotValue)
 	}
 
-	printf("--------------------------------------------------- .rela.dyn ---------------------------------------------------\n")
+	hLine(".rela.dyn")
 
 	for _, got := range gotEntries {
 		if got.Name == "" || strings.HasPrefix(got.Name, "GOT[") {
