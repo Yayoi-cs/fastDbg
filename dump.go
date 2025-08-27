@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unsafe"
 )
 
 func (dbger *TypeDbg) cmdDumpByte(a interface{}) error {
@@ -279,6 +280,13 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 
 // heap
 
+const tcacheMaxBins = 64
+
+type tcachePerThreadStruct struct {
+	counts  [tcacheMaxBins]uint16
+	entries [tcacheMaxBins]uint64
+}
+
 func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 	addr, sz, ok := func() (uint64, uint64, bool) {
 		for _, p := range procMapsDetail {
@@ -306,6 +314,35 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 	defer func() {
 		file.Close()
 		os.Remove(tempFile)
+	}()
+
+	// tcache
+	tmap := func() *map[uint64]string {
+		ret := make(map[uint64]string)
+		if len(code) > tcacheMaxBins*2+tcacheMaxBins*8+0x10 {
+			tpts := (*tcachePerThreadStruct)(unsafe.Pointer(&code[0x10]))
+			for i, e := range tpts.entries {
+				if e == 0 {
+					continue
+				}
+				ret[e] = fmt.Sprintf("tcache[sz=0x%x][1/%d]", 0x20+0x10*i, tpts.counts[i])
+				var curr uint64 = e
+				for j := range tpts.counts[i] - 1 {
+					tmp := binary.LittleEndian.Uint64(code[curr-addr : curr-addr+8])
+					if tmp%0x10 != 0 {
+						curr = tmp ^ (curr >> 12)
+					} else {
+						curr = tmp
+					}
+					ret[curr] = fmt.Sprintf("tcache[sz=0x%x][%d/%d]", 0x20+0x10*i, 2+j, tpts.counts[i])
+					if curr == 0 || curr-addr > uint64(len(code)) {
+						break
+					}
+				}
+			}
+		}
+
+		return &ret
 	}()
 
 	var c int = 0
@@ -336,7 +373,8 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 					zeroFlag = false
 				}
 				if zeroSz < 0x10 {
-					fmt.Fprintf(file, "%s0x%016x|+0x%05x|+0x%05x: %016x %016x | ", color, addr+i+j, j, i+j, v1, v2)
+					str, ok := (*tmap)[addr+i+j]
+					fmt.Fprintf(file, "%s0x%016x|+0x%05x|+0x%05x: 0x%016x 0x%016x | ", color, addr+i+j, j, i+j, v1, v2)
 					for k := range uint64(0x10) {
 						b := code[i+j+k]
 						if b >= 32 && b <= 126 {
@@ -345,7 +383,11 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 							fmt.Fprintf(file, ".")
 						}
 					}
-					fmt.Fprintf(file, " |%s\n", ColorReset)
+					if ok {
+						fmt.Fprintf(file, " | <- %s%s\n", str, ColorReset)
+					} else {
+						fmt.Fprintf(file, " |%s\n", ColorReset)
+					}
 				}
 			}
 		}
