@@ -313,20 +313,40 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 		chkSz := binary.LittleEndian.Uint64(code[i+8 : i+16])
 		chkSz = chkSz & 0xfffffffffffffff8
 		color := colorArray[c%len(colorArray)]
-		if i+chkSz < uint64(len(code)) {
-			for j := uint64(0); j < chkSz; j += 0x10 {
-				fmt.Fprintf(file, "%s0x%016x|+0x%05x|+0x%05x: %016x %016x | ", color, addr+i+j, j, i+j,
-					binary.LittleEndian.Uint64(code[i+j:i+j+8]),
-					binary.LittleEndian.Uint64(code[i+j+8:i+j+8+8]))
-				for k := range uint64(0x10) {
-					b := code[i+j+k]
-					if b >= 32 && b <= 126 {
-						fmt.Fprintf(file, "%c", b)
-					} else {
-						fmt.Fprintf(file, ".")
-					}
+		var zeroFlag bool = false
+		var zeroSz int = 0
+		for j := uint64(0); j < chkSz; j += 0x10 {
+			if i+j+0x10 < uint64(len(code)) {
+				v1 := binary.LittleEndian.Uint64(code[i+j : i+j+8])
+				v2 := binary.LittleEndian.Uint64(code[i+j+8 : i+j+8+8])
+				if zeroFlag {
+					zeroSz += 0x10
 				}
-				fmt.Fprintf(file, " |%s\n", ColorReset)
+				if v1 == 0 && v2 == 0 {
+					if zeroFlag && j+0x10 == chkSz {
+						fmt.Fprintf(file, "%s[repeat 0 for +0x%x times]%s\n", color, zeroSz, ColorReset)
+					} else {
+						zeroFlag = true
+					}
+				} else {
+					if zeroFlag && zeroSz >= 0x10 {
+						fmt.Fprintf(file, "%s[repeat 0 for +0x%x times]%s\n", color, zeroSz, ColorReset)
+					}
+					zeroSz = 0
+					zeroFlag = false
+				}
+				if zeroSz < 0x10 {
+					fmt.Fprintf(file, "%s0x%016x|+0x%05x|+0x%05x: %016x %016x | ", color, addr+i+j, j, i+j, v1, v2)
+					for k := range uint64(0x10) {
+						b := code[i+j+k]
+						if b >= 32 && b <= 126 {
+							fmt.Fprintf(file, "%c", b)
+						} else {
+							fmt.Fprintf(file, ".")
+						}
+					}
+					fmt.Fprintf(file, " |%s\n", ColorReset)
+				}
 			}
 		}
 		i += chkSz
