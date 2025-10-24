@@ -41,7 +41,9 @@ var procMapsDetail []*proc
 type proc struct {
 	start  uint64
 	end    uint64
-	rwx    string
+	r      bool
+	w      bool
+	x      bool
 	offset uint64
 	path   string
 }
@@ -117,7 +119,9 @@ func (dbger *TypeDbg) loadBase() error {
 		newMap := proc{
 			start:  startAddr,
 			end:    endAddr,
-			rwx:    match[3],
+			r:      strings.Contains(match[3], "r"),
+			w:      strings.Contains(match[3], "w"),
+			x:      strings.Contains(match[3], "x"),
 			offset: offset,
 			path:   pathname,
 		}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,7 +146,7 @@ func (dbger *TypeDbg) cmdDumpQword(a interface{}) error {
 
 		for j := 0; j < 16; j += 8 {
 			if len(data)-(i+j) >= 8 {
-				fmt.Printf("0x%016x ", binary.LittleEndian.Uint32(data[i+j:i+j+8]))
+				fmt.Printf("0x%016x ", binary.LittleEndian.Uint64(data[i+j:i+j+8]))
 			} else {
 				fmt.Printf("                   ")
 			}
@@ -172,54 +173,89 @@ var maxDeps int = 0
 
 func (dbger *TypeDbg) addr2some(addr uint64) string {
 	var ret string
-	for _, p := range procMapsDetail {
-		if p.start <= addr && addr < p.end {
-			sym, off, err := dbger.ResolveAddrToSymbol(addr)
-			if err == nil {
-				if off == 0 {
-					ret += fmt.Sprintf("%s<%s>%s", ColorPurple, sym.Name, ColorReset)
-				} else {
-					ret += fmt.Sprintf("%s<%s+0x%x>%s", ColorPurple, sym.Name, off, ColorReset)
-				}
-			}
-			if strings.Contains(p.rwx, "x") {
-				instr, err := dbger.disassOne(uintptr(addr))
-				if err == nil {
-					ret += fmt.Sprintf("%s->%s%s%s", ColorReset, ColorRed, *instr, ColorReset)
-				}
-			} else {
-				code, err := dbger.GetMemory(8, uintptr(addr))
-				if err == nil {
-					ok := func() bool {
-						nonZero := false
-						for _, c := range code {
-							if c == 0 {
-								continue
-							}
-							nonZero = true
-							if c < 0x20 || c > 0x7e {
-								return false
-							}
-						}
-
-						return nonZero
-					}()
-					if ok {
-						ret += fmt.Sprintf("%s->%s\"%s\"%s", ColorReset, ColorBlue, string(code), ColorReset)
-					} else {
-						newAddr := binary.LittleEndian.Uint64(code)
-						ret += fmt.Sprintf("%s->%s0x%016x%s", ColorReset, ColorCyan, newAddr, ColorReset)
-						if maxDeps < 4 {
-							ret += dbger.addr2some(newAddr)
-							maxDeps++
-						}
+	sym, off, err := dbger.ResolveAddrToSymbol(addr)
+	color := dbger.addr2color(addr)
+	if err == nil {
+		if off == 0 {
+			ret += fmt.Sprintf("%s<%s>%s", color, sym.Name, ColorReset)
+		} else {
+			ret += fmt.Sprintf("%s<%s+0x%x>%s", color, sym.Name, off, ColorReset)
+		}
+	}
+	if color == ColorExecutable || color == ColorReadWriteExecutable || color == ColorReadExecutable {
+		instr, err := dbger.disassOne(uintptr(addr))
+		if err == nil {
+			ret += fmt.Sprintf("%s->%s%s%s", ColorReset, color, *instr, ColorReset)
+		}
+	} else {
+		code, err := dbger.GetMemory(8, uintptr(addr))
+		if err == nil {
+			ok := func() bool {
+				nonZero := false
+				for _, c := range code {
+					if c == 0 {
+						continue
 					}
+					nonZero = true
+					if c < 0x20 || c > 0x7e {
+						return false
+					}
+				}
+
+				return nonZero
+			}()
+			if ok {
+				ret += fmt.Sprintf("%s->%s\"%s\"%s", ColorReset, color, string(code), ColorReset)
+			} else {
+				newAddr := binary.LittleEndian.Uint64(code)
+				ret += fmt.Sprintf("%s->%s0x%016x%s", ColorReset, dbger.addr2color(newAddr), newAddr, ColorReset)
+				if maxDeps < 4 {
+					ret += dbger.addr2some(newAddr)
+					maxDeps++
 				}
 			}
 		}
 	}
 	maxDeps = 0
 	return ret
+}
+
+const (
+	ColorReadWriteExecutable = ColorYellow
+	ColorReadExecutable      = ColorRed
+	ColorReadWrite           = ColorCyan
+	ColorExecutable          = ColorPurple
+	ColorRead                = ColorBlue
+	ColorWrite               = ColorGreen
+	ColorDefault             = ColorReset
+)
+
+func (dbger *TypeDbg) addr2color(addr uint64) string {
+	idx := sort.Search(len(procMapsDetail), func(i int) bool {
+		return procMapsDetail[i].end > addr
+	})
+	if idx < len(procMapsDetail) &&
+		addr >= procMapsDetail[idx].start &&
+		addr < procMapsDetail[idx].end {
+		p := procMapsDetail[idx]
+		if p.r && p.w && p.x {
+			return ColorReadWriteExecutable // rwx
+		}
+		if p.r && p.w && !p.x {
+			return ColorReadWrite // rw
+		}
+		if p.x {
+			return ColorExecutable // x (with or without r)
+		}
+		if p.r && !p.w && !p.x {
+			return ColorRead // r only
+		}
+		if p.w && !p.r && !p.x {
+			return ColorWrite // w only
+		}
+		return ColorDefault
+	}
+	return ColorDefault
 }
 
 func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
@@ -259,9 +295,11 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 
 	for i := 0; i < len(code); i += 8 {
 		if i+8 < len(code) {
-			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)|%s%016x%s%s\n",
-				ColorBlue, addr+uint64(i), ColorReset, i, i/8, ColorCyan,
-				binary.LittleEndian.Uint64(code[i:i+8]), dbger.addr2some(binary.LittleEndian.Uint64(code[i:i+8])), ColorReset)
+			address := binary.LittleEndian.Uint64(code[i : i+8])
+			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)|%s0x%016x%s%s\n",
+				ColorBlue, addr+uint64(i), ColorReset, i, i/8, dbger.addr2color(address),
+				address,
+				dbger.addr2some(address), ColorReset)
 		}
 	}
 	file.Close()
@@ -286,6 +324,12 @@ type tcachePerThreadStruct struct {
 	counts  [tcacheMaxBins]uint16
 	entries [tcacheMaxBins]uint64
 }
+
+const (
+	stateTrue = iota
+	stateFalse
+	stateUndefined
+)
 
 func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 	addr, sz, ok := func() (uint64, uint64, bool) {
@@ -316,6 +360,7 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 		os.Remove(tempFile)
 	}()
 
+	isSafeLinking := stateUndefined
 	// tcache
 	tmap := func() *map[uint64]string {
 		ret := make(map[uint64]string)
@@ -329,7 +374,14 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 				var curr uint64 = e
 				for j := range tpts.counts[i] - 1 {
 					tmp := binary.LittleEndian.Uint64(code[curr-addr : curr-addr+8])
-					if tmp%0x10 != 0 {
+					if isSafeLinking == stateUndefined {
+						if tmp%0x10 != 0 {
+							isSafeLinking = stateTrue
+						} else {
+							isSafeLinking = stateFalse
+						}
+					}
+					if isSafeLinking == stateTrue {
 						curr = tmp ^ (curr >> 12)
 					} else {
 						curr = tmp

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -701,27 +702,33 @@ func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 	}
 
 	libs, err := dbger.ldd()
+	var wg sync.WaitGroup
+	wg.Add(len(libs))
 	if err != nil {
 		Printf("Warning: failed to get shared libraries: %v\n", err)
 	} else {
 		for _, lib := range libs {
-			libRoot := rootStruct{
-				name: lib,
-				base: 0,
-				end:  0,
-				root: &symTree{p: make(map[uint8]*symTree)},
-			}
-			libRoots = append(libRoots, libRoot)
+			go func() {
+				defer wg.Done()
+				libRoot := rootStruct{
+					name: lib,
+					base: 0,
+					end:  0,
+					root: &symTree{p: make(map[uint8]*symTree)},
+				}
+				libRoots = append(libRoots, libRoot)
 
-			libIndex := len(libRoots) - 1
-			if err := dbger.loadSymbolsFromFile(lib, libIndex); err != nil {
-				Printf("Warning: failed to load symbols from %s: %v\n", lib, err)
-			}
+				libIndex := len(libRoots) - 1
+				if err := dbger.loadSymbolsFromFile(lib, libIndex); err != nil {
+					Printf("Warning: failed to load symbols from %s: %v\n", lib, err)
+				}
+			}()
 		}
 	}
+	wg.Wait()
 
-	symTable.getSortedAddresses()
 	Printf("Loaded %d symbols from %d libraries\n", len(symTable.symbols), len(libRoots))
+	go symTable.getSortedAddresses()
 
 	return nil
 }

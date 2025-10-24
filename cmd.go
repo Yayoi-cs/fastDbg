@@ -24,6 +24,7 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`:                                                                   (*TypeDbg).cmdContinue,
 	`^\s*(step|STEP)\s*$`:                                                                                         (*TypeDbg).cmdStep,
 	`^\s*(context|CONTEXT)\s*$`:                                                                                   (*TypeDbg).cmdContext,
+	`^\s*(color|COLOR)\s*$`:                                                                                       (*TypeDbg).cmdColor,
 	`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                                   (*TypeDbg).cmdStack,
 	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                                                              (*TypeDbg).cmdVmmap,
 	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                                                                    (*TypeDbg).cmdSym,
@@ -237,24 +238,24 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		return err
 	}
 
-	Printf("$rax   : 0x%016x%s\n", regs.Rax, dbger.addr2some(regs.Rax))
-	Printf("$rbx   : 0x%016x%s\n", regs.Rbx, dbger.addr2some(regs.Rbx))
-	Printf("$rcx   : 0x%016x%s\n", regs.Rcx, dbger.addr2some(regs.Rcx))
-	Printf("$rdx   : 0x%016x%s\n", regs.Rdx, dbger.addr2some(regs.Rdx))
-	Printf("$rsp   : 0x%016x%s\n", regs.Rsp, dbger.addr2some(regs.Rsp))
-	Printf("$rbp   : 0x%016x%s\n", regs.Rbp, dbger.addr2some(regs.Rbp))
-	Printf("$rsi   : 0x%016x%s\n", regs.Rsi, dbger.addr2some(regs.Rsi))
-	Printf("$rdi   : 0x%016x%s\n", regs.Rdi, dbger.addr2some(regs.Rdi))
-	Printf("$rip   : 0x%016x%s\n", rip, dbger.addr2some(rip))
-	Printf("$r8    : 0x%016x%s\n", regs.R8, dbger.addr2some(regs.R8))
-	Printf("$r9    : 0x%016x%s\n", regs.R9, dbger.addr2some(regs.R9))
-	Printf("$r10   : 0x%016x%s\n", regs.R10, dbger.addr2some(regs.R10))
-	Printf("$r11   : 0x%016x%s\n", regs.R11, dbger.addr2some(regs.R11))
-	Printf("$r12   : 0x%016x%s\n", regs.R12, dbger.addr2some(regs.R12))
-	Printf("$r13   : 0x%016x%s\n", regs.R13, dbger.addr2some(regs.R13))
-	Printf("$r14   : 0x%016x%s\n", regs.R14, dbger.addr2some(regs.R14))
-	Printf("$eflags: 0x%016x\n", regs.Eflags)
-	Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
+	fmt.Printf("$rax   : %s0x%016x%s\n", dbger.addr2color(regs.Rax), regs.Rax, dbger.addr2some(regs.Rax))
+	fmt.Printf("$rbx   : %s0x%016x%s\n", dbger.addr2color(regs.Rbx), regs.Rbx, dbger.addr2some(regs.Rbx))
+	fmt.Printf("$rcx   : %s0x%016x%s\n", dbger.addr2color(regs.Rcx), regs.Rcx, dbger.addr2some(regs.Rcx))
+	fmt.Printf("$rdx   : %s0x%016x%s\n", dbger.addr2color(regs.Rdx), regs.Rdx, dbger.addr2some(regs.Rdx))
+	fmt.Printf("$rsp   : %s0x%016x%s\n", dbger.addr2color(regs.Rsp), regs.Rsp, dbger.addr2some(regs.Rsp))
+	fmt.Printf("$rbp   : %s0x%016x%s\n", dbger.addr2color(regs.Rbp), regs.Rbp, dbger.addr2some(regs.Rbp))
+	fmt.Printf("$rsi   : %s0x%016x%s\n", dbger.addr2color(regs.Rsi), regs.Rsi, dbger.addr2some(regs.Rsi))
+	fmt.Printf("$rdi   : %s0x%016x%s\n", dbger.addr2color(regs.Rdi), regs.Rdi, dbger.addr2some(regs.Rdi))
+	fmt.Printf("$rip   : %s0x%016x%s\n", dbger.addr2color(rip), rip, dbger.addr2some(rip))
+	fmt.Printf("$r8    : %s0x%016x%s\n", dbger.addr2color(regs.R8), regs.R8, dbger.addr2some(regs.R8))
+	fmt.Printf("$r9    : %s0x%016x%s\n", dbger.addr2color(regs.R9), regs.R9, dbger.addr2some(regs.R9))
+	fmt.Printf("$r10   : %s0x%016x%s\n", dbger.addr2color(regs.R10), regs.R10, dbger.addr2some(regs.R10))
+	fmt.Printf("$r11   : %s0x%016x%s\n", dbger.addr2color(regs.R11), regs.R11, dbger.addr2some(regs.R11))
+	fmt.Printf("$r12   : %s0x%016x%s\n", dbger.addr2color(regs.R12), regs.R12, dbger.addr2some(regs.R12))
+	fmt.Printf("$r13   : %s0x%016x%s\n", dbger.addr2color(regs.R13), regs.R13, dbger.addr2some(regs.R13))
+	fmt.Printf("$r14   : %s0x%016x%s\n", dbger.addr2color(regs.R14), regs.R14, dbger.addr2some(regs.R14))
+	fmt.Printf("$eflags: 0x%016x\n", regs.Eflags)
+	fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
 		regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
 
 	hLine("stack")
@@ -269,8 +270,9 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 					if i != 0 {
 						fmt.Printf("     ")
 					}
-					fmt.Printf("%s0x%016x%s: %s0x%016x%s%s\n", ColorBlue, regs.Rsp+uint64(i), ColorReset, ColorCyan,
-						binary.LittleEndian.Uint64(data[i:i+8]), ColorReset, dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
+					address := binary.LittleEndian.Uint64(data[i : i+8])
+					fmt.Printf("%s0x%016x%s: %s0x%016x%s%s\n", ColorReadWrite, regs.Rsp+uint64(i), ColorReset, dbger.addr2color(address),
+						address, ColorReset, dbger.addr2some(address))
 				}
 			}
 		}
@@ -332,14 +334,34 @@ func (dbger *TypeDbg) cmdVmmap(a interface{}) error {
 	if args[2] != "" {
 		for _, p := range procMapsDetail {
 			if strings.Contains(p.path, strings.TrimSpace(args[2])) {
-				fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, p.rwx, p.path)
+				rwx := ""
+				if p.r {
+					rwx += "r"
+				}
+				if p.w {
+					rwx += "w"
+				}
+				if p.x {
+					rwx += "x"
+				}
+				fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, rwx, p.path)
 			}
 		}
 		return nil
 	}
 
 	for _, p := range procMapsDetail {
-		fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, p.rwx, p.path)
+		rwx := ""
+		if p.r {
+			rwx += "r"
+		}
+		if p.w {
+			rwx += "w"
+		}
+		if p.x {
+			rwx += "x"
+		}
+		fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, rwx, p.path)
 	}
 
 	return nil
@@ -482,8 +504,6 @@ func (dbger *TypeDbg) cmdCmd(a interface{}) error {
 		return errors.New("invalid arguments")
 	}
 
-	fmt.Println(strings.Join(args, ","))
-
 	handle := exec.Command("/bin/sh", "-c", args[2])
 	output, err := handle.CombinedOutput()
 	fmt.Println(string(output))
@@ -554,24 +574,24 @@ func (dbger *TypeDbg) cmdRegs(a interface{}) error {
 		return err
 	}
 
-	Printf("$rax   : 0x%016x%s\n", regs.Rax, dbger.addr2some(regs.Rax))
-	Printf("$rbx   : 0x%016x%s\n", regs.Rbx, dbger.addr2some(regs.Rbx))
-	Printf("$rcx   : 0x%016x%s\n", regs.Rcx, dbger.addr2some(regs.Rcx))
-	Printf("$rdx   : 0x%016x%s\n", regs.Rdx, dbger.addr2some(regs.Rdx))
-	Printf("$rsp   : 0x%016x%s\n", regs.Rsp, dbger.addr2some(regs.Rsp))
-	Printf("$rbp   : 0x%016x%s\n", regs.Rbp, dbger.addr2some(regs.Rbp))
-	Printf("$rsi   : 0x%016x%s\n", regs.Rsi, dbger.addr2some(regs.Rsi))
-	Printf("$rdi   : 0x%016x%s\n", regs.Rdi, dbger.addr2some(regs.Rdi))
-	Printf("$rip   : 0x%016x%s\n", rip, dbger.addr2some(rip))
-	Printf("$r8    : 0x%016x%s\n", regs.R8, dbger.addr2some(regs.R8))
-	Printf("$r9    : 0x%016x%s\n", regs.R9, dbger.addr2some(regs.R9))
-	Printf("$r10   : 0x%016x%s\n", regs.R10, dbger.addr2some(regs.R10))
-	Printf("$r11   : 0x%016x%s\n", regs.R11, dbger.addr2some(regs.R11))
-	Printf("$r12   : 0x%016x%s\n", regs.R12, dbger.addr2some(regs.R12))
-	Printf("$r13   : 0x%016x%s\n", regs.R13, dbger.addr2some(regs.R13))
-	Printf("$r14   : 0x%016x%s\n", regs.R14, dbger.addr2some(regs.R14))
-	Printf("$eflags: 0x%016x\n", regs.Eflags)
-	Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
+	fmt.Printf("$rax   : %s0x%016x%s\n", dbger.addr2color(regs.Rax), regs.Rax, dbger.addr2some(regs.Rax))
+	fmt.Printf("$rbx   : %s0x%016x%s\n", dbger.addr2color(regs.Rbx), regs.Rbx, dbger.addr2some(regs.Rbx))
+	fmt.Printf("$rcx   : %s0x%016x%s\n", dbger.addr2color(regs.Rcx), regs.Rcx, dbger.addr2some(regs.Rcx))
+	fmt.Printf("$rdx   : %s0x%016x%s\n", dbger.addr2color(regs.Rdx), regs.Rdx, dbger.addr2some(regs.Rdx))
+	fmt.Printf("$rsp   : %s0x%016x%s\n", dbger.addr2color(regs.Rsp), regs.Rsp, dbger.addr2some(regs.Rsp))
+	fmt.Printf("$rbp   : %s0x%016x%s\n", dbger.addr2color(regs.Rbp), regs.Rbp, dbger.addr2some(regs.Rbp))
+	fmt.Printf("$rsi   : %s0x%016x%s\n", dbger.addr2color(regs.Rsi), regs.Rsi, dbger.addr2some(regs.Rsi))
+	fmt.Printf("$rdi   : %s0x%016x%s\n", dbger.addr2color(regs.Rdi), regs.Rdi, dbger.addr2some(regs.Rdi))
+	fmt.Printf("$rip   : %s0x%016x%s\n", dbger.addr2color(rip), rip, dbger.addr2some(rip))
+	fmt.Printf("$r8    : %s0x%016x%s\n", dbger.addr2color(regs.R8), regs.R8, dbger.addr2some(regs.R8))
+	fmt.Printf("$r9    : %s0x%016x%s\n", dbger.addr2color(regs.R9), regs.R9, dbger.addr2some(regs.R9))
+	fmt.Printf("$r10   : %s0x%016x%s\n", dbger.addr2color(regs.R10), regs.R10, dbger.addr2some(regs.R10))
+	fmt.Printf("$r11   : %s0x%016x%s\n", dbger.addr2color(regs.R11), regs.R11, dbger.addr2some(regs.R11))
+	fmt.Printf("$r12   : %s0x%016x%s\n", dbger.addr2color(regs.R12), regs.R12, dbger.addr2some(regs.R12))
+	fmt.Printf("$r13   : %s0x%016x%s\n", dbger.addr2color(regs.R13), regs.R13, dbger.addr2some(regs.R13))
+	fmt.Printf("$r14   : %s0x%016x%s\n", dbger.addr2color(regs.R14), regs.R14, dbger.addr2some(regs.R14))
+	fmt.Printf("$eflags: 0x%016x\n", regs.Eflags)
+	fmt.Printf("$cs: %x $ss: %x $ds: %x $es: %x $fs: %x $gs: %x\n",
 		regs.Cs, regs.Ss, regs.Ds, regs.Es, regs.Fs, regs.Gs)
 
 	return nil
@@ -587,5 +607,16 @@ func (dbger *TypeDbg) cmdStep(_ interface{}) error {
 		dbger.cmdContext(nil)
 	}
 
+	return nil
+}
+
+func (dbger *TypeDbg) cmdColor(_ interface{}) error {
+	fmt.Printf("%s[r  ]: readonly				%s\n", ColorRead, ColorReset)
+	fmt.Printf("%s[ w ]: writeonly				%s\n", ColorWrite, ColorReset)
+	fmt.Printf("%s[  x]: executable				%s\n", ColorExecutable, ColorReset)
+	fmt.Printf("%s[rw ]: read/write				%s\n", ColorReadWrite, ColorReset)
+	fmt.Printf("%s[r x]: read/executable			%s\n", ColorReadExecutable, ColorReset)
+	fmt.Printf("%s[rwx]: read/write/executable	%s\n", ColorReadWriteExecutable, ColorReset)
+	fmt.Printf("%s[---]: fault					%s\n", ColorDefault, ColorReset)
 	return nil
 }

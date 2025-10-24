@@ -2,35 +2,37 @@ package main
 
 import (
 	"fmt"
-	"github.com/manifoldco/promptui"
+	"github.com/chzyer/readline"
+	"io"
 )
 
 func (dbger *TypeDbg) Interactive() {
 	dbger.LoadSymbolsFromELF()
 	prev := ""
 
-	templates := &promptui.PromptTemplates{
-		Prompt:  "{{ . }}",
-		Valid:   "{{ . }}",
-		Invalid: "{{ . }}",
-		Success: "{{ . }}",
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:              "[fastDbg]$ ",
+		HistoryFile:         "/tmp/fastdbg_history.txt",
+		InterruptPrompt:     "^C",
+		EOFPrompt:           "exit",
+		HistorySearchFold:   true,
+		FuncFilterInputRune: filterInput,
+	})
+	if err != nil {
+		panic(err)
 	}
+	defer rl.Close()
+
 	for {
-		var label string
 		if !dbger.isStart {
-			label = "[fastDbg]$ "
+			rl.SetPrompt("[fastDbg]$ ")
 		} else {
-			label = fmt.Sprintf("[%s%x%s]$ ", ColorCyan, dbger.rip, ColorReset)
+			rl.SetPrompt(fmt.Sprintf("[%sfastDbg%s:%s0x%x%s]$ ", ColorCyan, ColorReset, ColorCyan, dbger.rip, ColorReset))
 		}
 
-		prompt := promptui.Prompt{
-			Label:     label,
-			Templates: templates,
-		}
-
-		req, err := prompt.Run()
+		req, err := rl.Readline()
 		if err != nil {
-			if err == promptui.ErrInterrupt {
+			if err == readline.ErrInterrupt || err == io.EOF {
 				break
 			}
 			continue
@@ -46,6 +48,7 @@ func (dbger *TypeDbg) Interactive() {
 		if req == "q" || req == "exit" {
 			break
 		}
+
 		prev = req
 		err = dbger.cmdExec(req)
 
@@ -53,4 +56,12 @@ func (dbger *TypeDbg) Interactive() {
 			LogError(err.Error())
 		}
 	}
+}
+
+func filterInput(r rune) (rune, bool) {
+	switch r {
+	case readline.CharCtrlZ:
+		return r, false
+	}
+	return r, true
 }

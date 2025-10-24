@@ -79,12 +79,12 @@ func (dbger *TypeDbg) disass(addr uint64, sz uint) {
 		if op_str_go != "" {
 			v, err := strconv.ParseUint(op_str_go, 0, 64)
 			if err != nil {
-				Printf("0x%016x: %s %s\n", C.get_address(inst), mnemonic_str, op_str_go)
+				fmt.Printf("%s0x%016x%s: %s%s %s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, op_str_go, ColorReset)
 			} else {
-				Printf("0x%016x: %s %s%s\n", C.get_address(inst), mnemonic_str, op_str_go, dbger.addr2some(v))
+				fmt.Printf("%s0x%016x%s: %s%s %s%s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, op_str_go, dbger.addr2some(v), ColorReset)
 			}
 		} else {
-			Printf("0x%016x: %s\n", C.get_address(inst), mnemonic_str)
+			fmt.Printf("%s0x%016x%s: %s%s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, ColorReset)
 		}
 	}
 }
@@ -227,16 +227,15 @@ func (dbger *TypeDbg) disass2ret(addr uint64) {
 		if op_str_go != "" {
 			v, err := strconv.ParseUint(op_str_go, 0, 64)
 			if err != nil {
-				Printf("0x%016x: %s %s\n", C.get_address(inst), mnemonic_str, op_str_go)
+				fmt.Printf("%s0x%016x%s: %s%s %s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, op_str_go, ColorReset)
 			} else {
-				Printf("0x%016x: %s %s%s\n", C.get_address(inst), mnemonic_str, op_str_go, dbger.addr2some(v))
+				fmt.Printf("%s0x%016x%s: %s%s %s%s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, op_str_go, dbger.addr2some(v), ColorReset)
 			}
 		} else {
-			Printf("0x%016x: %s\n", C.get_address(inst), mnemonic_str)
+			fmt.Printf("%s0x%016x%s: %s%s%s\n", ColorBlue, C.get_address(inst), ColorReset, ColorPurple, mnemonic_str, ColorReset)
 		}
 
 		isRet := strings.HasPrefix(mnemonic_str, "ret")
-		isRet = strings.HasPrefix(mnemonic_str, "jmp") || isRet
 
 		instSize := uint64(C.get_size(inst))
 
