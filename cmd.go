@@ -34,6 +34,7 @@ var cmd = map[string]func(*TypeDbg, interface{}) error{
 	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpDword,
 	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpQword,
 	`^\s*(tel|telescope|TEL|TELESCOPE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdTelescope,
+	`^\s*(bt|backtrace|BT|BACKTRACE)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                                               (*TypeDbg).cmdBacktrace,
 }
 
 func (dbger *TypeDbg) cmdExec(req string) error {
@@ -284,6 +285,9 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 	}
 
 	hLine("back trace")
+	// Create a minimal args slice for backtrace (no depth limit specified)
+	btArgs := []string{"backtrace", "", ""}
+	dbger.backtrace(btArgs, false)
 
 	return nil
 }
@@ -618,5 +622,139 @@ func (dbger *TypeDbg) cmdColor(_ interface{}) error {
 	fmt.Printf("%s[r x]: read/executable			%s\n", ColorReadExecutable, ColorReset)
 	fmt.Printf("%s[rwx]: read/write/executable	%s\n", ColorReadWriteExecutable, ColorReset)
 	fmt.Printf("%s[---]: fault					%s\n", ColorDefault, ColorReset)
+	return nil
+}
+
+func (dbger *TypeDbg) cmdBacktrace(a interface{}) error {
+	return dbger.backtrace(a, true)
+}
+
+func (dbger *TypeDbg) backtrace(a interface{}, standalone bool) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+
+	// Default max depth
+	maxDepth := 20
+	var err error
+
+	// Parse optional depth argument
+	if len(args) > 2 && len(args[2]) != 0 {
+		depth, err := strconv.ParseUint(args[2], 0, 64)
+		if err != nil {
+			return fmt.Errorf("invalid depth: %v", err)
+		}
+		maxDepth = int(depth)
+	}
+
+	regs, err := dbger.getRegs()
+	if err != nil {
+		return err
+	}
+
+	if regs == nil {
+		return errors.New("nil registers")
+	}
+
+	rip, err := dbger.GetRip()
+	if err != nil {
+		return err
+	}
+
+	rbp := regs.Rbp
+
+	// Print current frame (frame 0)
+	frameNum := 0
+	fmt.Printf("#%-2d %s0x%016x%s", frameNum, dbger.addr2color(rip), rip, ColorReset)
+
+	sym, offset, err := dbger.ResolveAddrToSymbol(rip)
+	if err == nil && sym != nil {
+		if offset == 0 {
+			fmt.Printf(" in %s()\n", sym.Name)
+		} else {
+			fmt.Printf(" in %s()+%d\n", sym.Name, offset)
+		}
+	} else {
+		fmt.Printf("\n")
+	}
+
+	// Walk the stack frames
+	visited := make(map[uint64]bool)
+	visited[rbp] = true
+
+	for frameNum = 1; frameNum < maxDepth; frameNum++ {
+		// Check if rbp is valid (non-zero and aligned)
+		if rbp == 0 || rbp%8 != 0 {
+			break
+		}
+
+		// Read saved RIP from [rbp+8]
+		ripData, err := dbger.GetMemory(8, uintptr(rbp+8))
+		if err != nil {
+			// Can't read memory, end of stack
+			break
+		}
+
+		if len(ripData) < 8 {
+			break
+		}
+
+		savedRip := binary.LittleEndian.Uint64(ripData)
+
+		// Check if the saved RIP looks valid (non-zero)
+		if savedRip == 0 {
+			break
+		}
+
+		// Print frame info
+		fmt.Printf("#%-2d %s0x%016x%s", frameNum, dbger.addr2color(savedRip), savedRip, ColorReset)
+
+		sym, offset, err := dbger.ResolveAddrToSymbol(savedRip)
+		if err == nil && sym != nil {
+			if offset == 0 {
+				fmt.Printf(" in %s()\n", sym.Name)
+			} else {
+				fmt.Printf(" in %s()+%d\n", sym.Name, offset)
+			}
+		} else {
+			fmt.Printf("\n")
+		}
+
+		// Read previous frame pointer from [rbp]
+		rbpData, err := dbger.GetMemory(8, uintptr(rbp))
+		if err != nil {
+			// Can't read memory, end of stack
+			break
+		}
+
+		if len(rbpData) < 8 {
+			break
+		}
+
+		prevRbp := binary.LittleEndian.Uint64(rbpData)
+
+		// Check for loops in frame pointer chain
+		if visited[prevRbp] {
+			break
+		}
+
+		// Check if frame pointer is moving in the right direction (up the stack)
+		if prevRbp <= rbp {
+			break
+		}
+
+		visited[prevRbp] = true
+		rbp = prevRbp
+	}
+
 	return nil
 }
