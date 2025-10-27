@@ -293,6 +293,14 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdStack(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -305,20 +313,110 @@ func (dbger *TypeDbg) cmdStack(a interface{}) error {
 			return err
 		}
 	}
-	rsp, err := dbger.GetRsp()
+
+	regs, err := dbger.getRegs()
 	if err != nil {
 		return err
 	}
+
+	if regs == nil {
+		return errors.New("nil registers")
+	}
+
+	rsp := regs.Rsp
+	rbp := regs.Rbp
+
+	// Collect stack frame information
+	type FrameInfo struct {
+		frameNum int
+		rbpAddr  uint64
+		ripAddr  uint64
+		rbpValue uint64
+		ripValue uint64
+	}
+
+	frames := []FrameInfo{}
+	currentRbp := rbp
+	visited := make(map[uint64]bool)
+
+	// Walk frames to collect frame information
+	for frameNum := 0; frameNum < 20; frameNum++ {
+		if currentRbp == 0 || currentRbp%8 != 0 {
+			break
+		}
+
+		if visited[currentRbp] {
+			break
+		}
+		visited[currentRbp] = true
+
+		frame := FrameInfo{
+			frameNum: frameNum,
+			rbpAddr:  currentRbp,
+			ripAddr:  currentRbp + 8,
+		}
+
+		// Read saved RBP
+		rbpData, err := dbger.GetMemory(8, uintptr(currentRbp))
+		if err == nil && len(rbpData) >= 8 {
+			frame.rbpValue = binary.LittleEndian.Uint64(rbpData)
+		}
+
+		// Read saved RIP
+		ripData, err := dbger.GetMemory(8, uintptr(currentRbp+8))
+		if err == nil && len(ripData) >= 8 {
+			frame.ripValue = binary.LittleEndian.Uint64(ripData)
+		}
+
+		frames = append(frames, frame)
+
+		if frame.rbpValue == 0 || frame.rbpValue <= currentRbp {
+			break
+		}
+		currentRbp = frame.rbpValue
+	}
+
+	// Read stack memory
 	data, err := dbger.GetMemory(uint(sz*8), uintptr(rsp))
 	if err != nil {
-		LogError("Error while getting stack memory: %v", err)
-	} else {
-		for i := 0; i < len(data); i += 8 {
-			if i+8 <= len(data) {
-				fmt.Printf("%s0x%016x%s: %s0x%016x%s%s\n", ColorBlue, rsp+uint64(i), ColorReset, ColorCyan,
-					binary.LittleEndian.Uint64(data[i:i+8]), ColorReset, dbger.addr2some(binary.LittleEndian.Uint64(data[i:i+8])))
+		return fmt.Errorf("error while getting stack memory: %v", err)
+	}
+
+	// Display stack with frame annotations
+	for i := 0; i < len(data); i += 8 {
+		if i+8 > len(data) {
+			break
+		}
+
+		addr := rsp + uint64(i)
+		value := binary.LittleEndian.Uint64(data[i : i+8])
+
+		// Check if this address is part of a frame
+		annotation := ""
+		for _, frame := range frames {
+			if addr == frame.rbpAddr {
+				annotation = fmt.Sprintf(" <- frame #%d rbp", frame.frameNum)
+				break
+			} else if addr == frame.ripAddr {
+				annotation = fmt.Sprintf(" <- frame #%d ret", frame.frameNum)
+				// Add symbol info for return address
+				if sym, offset, err := dbger.ResolveAddrToSymbol(value); err == nil && sym != nil {
+					if offset == 0 {
+						annotation += fmt.Sprintf(" (%s)", sym.Name)
+					} else {
+						annotation += fmt.Sprintf(" (%s+%d)", sym.Name, offset)
+					}
+				}
+				break
 			}
 		}
+
+		// Print the stack entry
+		fmt.Printf("%s0x%016x%s: %s0x%016x%s%s%s%s\n",
+			ColorBlue, addr, ColorReset,
+			dbger.addr2color(value), value, ColorReset,
+			dbger.addr2some(value),
+			ColorReadWriteExecutable, annotation)
 	}
 
 	return nil
