@@ -6,13 +6,13 @@ import (
 	"strings"
 )
 
-func (dbger *TypeDbg) GetRegs(regName string) (uint64, error) {
+func (dbger *TypeDbg) GetRegs(reqName string) (uint64, error) {
 	regs, err := dbger.getRegs()
 	if err != nil {
 		return 0, err
 	}
 
-	regName = strings.ToUpper(regName)
+	regName := strings.ToUpper(reqName)
 
 	switch regName {
 	case "R15":

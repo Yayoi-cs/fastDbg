@@ -86,6 +86,21 @@ func (dbger *TypeDbg) isProcessTraced() bool {
 	return !strings.Contains(string(data), "TracerPid:\t0")
 }
 
+func (dbger *TypeDbg) getExecutablePath() (string, error) {
+	exePath := fmt.Sprintf("/proc/%d/exe", dbger.pid)
+	realPath, err := filepath.EvalSymlinks(exePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve executable path: %v", err)
+	}
+
+	absPath, err := filepath.Abs(realPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path: %v", err)
+	}
+
+	return absPath, nil
+}
+
 func (dbger *TypeDbg) loadBase() error {
 	procMapsDetail = []*proc{}
 	rgx := `^([0-9a-f]+)-([0-9a-f]+)\s+([rwxps-]+)\s+([0-9a-f]+)\s+([0-9a-f]+:[0-9a-f]+)\s+(\d+)(?:\s+(.*))?$`
@@ -198,6 +213,7 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 
 		return nil
 	})
+
 	_, err = dbger.wait()
 	if err != nil {
 		return nil, err
@@ -232,7 +248,29 @@ func Attach(pid int) (*TypeDbg, error) {
 		return nil, fmt.Errorf("process %d is already being traced", pid)
 	}
 
-	err := doSyscallErr(dbger.rpc, func() error {
+	exePath, err := dbger.getExecutablePath()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get executable path: %v", err)
+	}
+	dbger.path = exePath
+	Printf("Resolved executable: %s\n", exePath)
+
+	f, err := elf.Open(exePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open ELF file: %v", err)
+	}
+	defer f.Close()
+
+	switch f.Class {
+	case elf.ELFCLASS32:
+		dbger.arch = 32
+	case elf.ELFCLASS64:
+		dbger.arch = 64
+	default:
+		return nil, errors.New("unknown ELF class")
+	}
+
+	err = doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceAttach(pid)
 	})
 	if err != nil {
@@ -243,9 +281,18 @@ func Attach(pid int) (*TypeDbg, error) {
 
 	_, err = dbger.wait()
 	if err != nil {
-		err = doSyscallErr(dbger.rpc, func() error {
+		waitErr := err
+		detachErr := doSyscallErr(dbger.rpc, func() error {
 			return unix.PtraceDetach(pid)
 		})
+		if detachErr != nil {
+			return nil, fmt.Errorf("wait failed: %v (detach also failed: %v)", waitErr, detachErr)
+		}
+		return nil, fmt.Errorf("wait failed: %v", waitErr)
+	}
+
+	dbger.rip, err = dbger.GetRip()
+	if err != nil {
 		return nil, err
 	}
 

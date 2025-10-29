@@ -11,42 +11,43 @@ import (
 	"strings"
 )
 
-var cmd = map[string]func(*TypeDbg, interface{}) error{
-	`^\s*(b|break|B|BREAK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                                          (*TypeDbg).cmdBreak,
-	`^\s*(b|break|B|BREAK)\s+(pie|PIE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                              (*TypeDbg).cmdBreakPie,
-	`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                                                   (*TypeDbg).cmdEnable,
-	`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`:                                                  (*TypeDbg).cmdDisable,
-	`^\s*(disass)(\s+(0[xx][0-9a-fa-f]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdDisass,
-	`^\s*(r|run|R|RUN)(?:\s+(.+))?$`:                                                                              (*TypeDbg).cmdRun,
-	`^\s*(s|start|S|START)(?:\s+(.+))?$`:                                                                          (*TypeDbg).cmdStart,
-	`^\s*(regs)(?:\s+(.+))?$`:                                                                                     (*TypeDbg).cmdRegs,
-	`^\s*(!)(.+)$`:                                                                                                (*TypeDbg).cmdCmd,
-	`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`:                                                                   (*TypeDbg).cmdContinue,
-	`^\s*(step|STEP)\s*$`:                                                                                         (*TypeDbg).cmdStep,
-	`^\s*(context|CONTEXT)\s*$`:                                                                                   (*TypeDbg).cmdContext,
-	`^\s*(color|COLOR)\s*$`:                                                                                       (*TypeDbg).cmdColor,
-	`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                                   (*TypeDbg).cmdStack,
-	`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`:                                                                              (*TypeDbg).cmdVmmap,
-	`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`:                                                                    (*TypeDbg).cmdSym,
-	`^\s*(got|GOT)\s*$`:                                                                                           (*TypeDbg).cmdGot,
-	`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`:                                                                   (*TypeDbg).cmdVisualHeap,
-	`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:                      (*TypeDbg).cmdDumpByte,
-	`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpDword,
-	`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`:              (*TypeDbg).cmdDumpQword,
-	`^\s*(tel|telescope|TEL|TELESCOPE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`: (*TypeDbg).cmdTelescope,
+type cmdHandler struct {
+	regex *regexp.Regexp
+	fn    func(*TypeDbg, interface{}) error
+}
+
+var compiledCmds = []cmdHandler{
+	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdBreak},
+	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(pie|PIE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdBreakPie},
+	{regexp.MustCompile(`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdEnable},
+	{regexp.MustCompile(`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdDisable},
+	{regexp.MustCompile(`^\s*(disass)(\s+(0[xx][0-9a-fa-f]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDisass},
+	{regexp.MustCompile(`^\s*(stackframe|stkf|STACKFRAME|STKF)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdStackFrame},
+	{regexp.MustCompile(`^\s*(p|print|P|PRINT)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdPrint},
+	{regexp.MustCompile(`^\s*(r|run|R|RUN)(?:\s+(.+))?$`), (*TypeDbg).cmdRun},
+	{regexp.MustCompile(`^\s*(s|start|S|START)(?:\s+(.+))?$`), (*TypeDbg).cmdStart},
+	{regexp.MustCompile(`^\s*(regs)(?:\s+(.+))?$`), (*TypeDbg).cmdRegs},
+	{regexp.MustCompile(`^\s*(!)(.+)$`), (*TypeDbg).cmdCmd},
+	{regexp.MustCompile(`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`), (*TypeDbg).cmdContinue},
+	{regexp.MustCompile(`^\s*(step|STEP)\s*$`), (*TypeDbg).cmdStep},
+	{regexp.MustCompile(`^\s*(context|CONTEXT)\s*$`), (*TypeDbg).cmdContext},
+	{regexp.MustCompile(`^\s*(color|COLOR)\s*$`), (*TypeDbg).cmdColor},
+	{regexp.MustCompile(`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdStack},
+	{regexp.MustCompile(`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`), (*TypeDbg).cmdVmmap},
+	{regexp.MustCompile(`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`), (*TypeDbg).cmdSym},
+	{regexp.MustCompile(`^\s*(got|GOT)\s*$`), (*TypeDbg).cmdGot},
+	{regexp.MustCompile(`^\s*(bins|BINS)\s*$`), (*TypeDbg).cmdBins},
+	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
+	{regexp.MustCompile(`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpByte},
+	{regexp.MustCompile(`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpDword},
+	{regexp.MustCompile(`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpQword},
+	{regexp.MustCompile(`^\s*(bt|backtrace|BT|BACKTRACE)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdBacktrace},
 }
 
 func (dbger *TypeDbg) cmdExec(req string) error {
-	for rgx, fnc := range cmd {
-		regex, err := regexp.Compile(rgx)
-		if err != nil {
-			return err
-		}
-
-		if regex.MatchString(req) {
-			m := regex.FindStringSubmatch(req)
-			err = fnc(dbger, m)
-			return err
+	for _, handler := range compiledCmds {
+		if m := handler.regex.FindStringSubmatch(req); m != nil {
+			return handler.fn(dbger, m)
 		}
 	}
 	return errors.New("unknown command")
@@ -67,13 +68,17 @@ func (dbger *TypeDbg) cmdBreak(a interface{}) error {
 
 	if !dbger.isStart {
 		tmpBps = append(tmpBps, uintptr(addr))
-		Printf("booked breakpoint %d @ %x\n", len(tmpBps), addr)
+		fmt.Printf("booked breakpoint %s%d%s @ %s0x%016x%s\n", ColorCyan, len(tmpBps), ColorReset, ColorCyan, addr, ColorReset)
 		return nil
 	}
 
 	_, err = dbger.NewBp(uintptr(addr), dbger.pid)
-
-	return err
+	if err != nil {
+		return err
+	} else {
+		fmt.Printf("new breakpoint at %s0x%016x%s\n", ColorCyan, addr, ColorReset)
+		return nil
+	}
 }
 
 func (dbger *TypeDbg) cmdBreakPie(a interface{}) error {
@@ -90,13 +95,17 @@ func (dbger *TypeDbg) cmdBreakPie(a interface{}) error {
 
 	if !dbger.isStart {
 		tmpPieBps = append(tmpPieBps, uintptr(addr))
-		Printf("booked breakpoint %d @ %x\n", len(tmpPieBps), addr)
+		fmt.Printf("booked breakpoint %s%d%s @ %s0x%016x%s\n", ColorCyan, len(tmpBps), ColorReset, ColorCyan, addr, ColorReset)
 		return nil
 	}
 
 	_, err = dbger.NewBp(uintptr(addr), dbger.pid)
-
-	return err
+	if err != nil {
+		return err
+	} else {
+		fmt.Printf("new breakpoint at %s0x%016x%s\n", ColorCyan, addr, ColorReset)
+		return nil
+	}
 }
 
 func (dbger *TypeDbg) cmdEnable(a interface{}) error {
@@ -124,6 +133,20 @@ func (dbger *TypeDbg) cmdDisable(a interface{}) error {
 	}
 
 	err = dbger.DisableBp(int(off))
+	return err
+}
+
+func (dbger *TypeDbg) cmdPrint(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	val, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("HEX: %s0x%x%s DEC: %s%d%s OCT: %s%o%s BIN: %s%b%s\n", ColorCyan, val, ColorReset, ColorCyan, val, ColorReset, ColorCyan, val, ColorReset, ColorCyan, val, ColorReset)
+
 	return err
 }
 
@@ -284,7 +307,10 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 	}
 
 	hLine("back trace")
+	btArgs := []string{"backtrace", "", ""}
+	dbger.backtrace(btArgs, false)
 
+	hLineRaw()
 	return nil
 }
 
@@ -337,14 +363,20 @@ func (dbger *TypeDbg) cmdVmmap(a interface{}) error {
 				rwx := ""
 				if p.r {
 					rwx += "r"
+				} else {
+					rwx += " "
 				}
 				if p.w {
 					rwx += "w"
+				} else {
+					rwx += " "
 				}
 				if p.x {
 					rwx += "x"
+				} else {
+					rwx += " "
 				}
-				fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, rwx, p.path)
+				fmt.Printf("%s0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s%s\n", dbger.addr2color(p.start), p.start, p.end, (int)(p.end-p.start), p.offset, rwx, p.path, ColorReset)
 			}
 		}
 		return nil
@@ -354,14 +386,20 @@ func (dbger *TypeDbg) cmdVmmap(a interface{}) error {
 		rwx := ""
 		if p.r {
 			rwx += "r"
+		} else {
+			rwx += " "
 		}
 		if p.w {
 			rwx += "w"
+		} else {
+			rwx += " "
 		}
 		if p.x {
 			rwx += "x"
+		} else {
+			rwx += " "
 		}
-		fmt.Printf("0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s\n", p.start, p.end, (p.end - p.start), p.offset, rwx, p.path)
+		fmt.Printf("%s0x%016x ~ 0x%016x | 0x%08x | +0x%08x | %s : %s%s\n", dbger.addr2color(p.start), p.start, p.end, (p.end - p.start), p.offset, rwx, p.path, ColorReset)
 	}
 
 	return nil
@@ -618,5 +656,245 @@ func (dbger *TypeDbg) cmdColor(_ interface{}) error {
 	fmt.Printf("%s[r x]: read/executable			%s\n", ColorReadExecutable, ColorReset)
 	fmt.Printf("%s[rwx]: read/write/executable	%s\n", ColorReadWriteExecutable, ColorReset)
 	fmt.Printf("%s[---]: fault					%s\n", ColorDefault, ColorReset)
+	return nil
+}
+
+func (dbger *TypeDbg) cmdBacktrace(a interface{}) error {
+	return dbger.backtrace(a, true)
+}
+
+func (dbger *TypeDbg) backtrace(a interface{}, standalone bool) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+
+	maxDepth := 20
+	var err error
+
+	if len(args) > 2 && len(args[2]) != 0 {
+		depth, err := strconv.ParseUint(args[2], 0, 64)
+		if err != nil {
+			return fmt.Errorf("invalid depth: %v", err)
+		}
+		maxDepth = int(depth)
+	}
+
+	regs, err := dbger.getRegs()
+	if err != nil {
+		return err
+	}
+
+	if regs == nil {
+		return errors.New("nil registers")
+	}
+
+	rip, err := dbger.GetRip()
+	if err != nil {
+		return err
+	}
+
+	rbp := regs.Rbp
+
+	frameNum := 0
+	fmt.Printf("#%-2d %s0x%016x%s", frameNum, dbger.addr2color(rip), rip, ColorReset)
+
+	sym, offset, err := dbger.ResolveAddrToSymbol(rip)
+	if err == nil && sym != nil {
+		if offset == 0 {
+			fmt.Printf(" in %s()\n", sym.Name)
+		} else {
+			fmt.Printf(" in %s()+%d\n", sym.Name, offset)
+		}
+	} else {
+		fmt.Printf("\n")
+	}
+
+	visited := make(map[uint64]bool)
+	visited[rbp] = true
+
+	for frameNum = 1; frameNum < maxDepth; frameNum++ {
+		if rbp == 0 || rbp%8 != 0 {
+			break
+		}
+
+		ripData, err := dbger.GetMemory(8, uintptr(rbp+8))
+		if err != nil {
+			break
+		}
+
+		if len(ripData) < 8 {
+			break
+		}
+
+		savedRip := binary.LittleEndian.Uint64(ripData)
+
+		if savedRip == 0 {
+			break
+		}
+
+		fmt.Printf("#%-2d %s0x%016x%s", frameNum, dbger.addr2color(savedRip), savedRip, ColorReset)
+
+		sym, offset, err := dbger.ResolveAddrToSymbol(savedRip)
+		if err == nil && sym != nil {
+			if offset == 0 {
+				fmt.Printf(" in %s()\n", sym.Name)
+			} else {
+				fmt.Printf(" in %s()+%d\n", sym.Name, offset)
+			}
+		} else {
+			fmt.Printf("\n")
+		}
+
+		rbpData, err := dbger.GetMemory(8, uintptr(rbp))
+		if err != nil {
+			break
+		}
+
+		if len(rbpData) < 8 {
+			break
+		}
+
+		prevRbp := binary.LittleEndian.Uint64(rbpData)
+		if visited[prevRbp] {
+			break
+		}
+		if prevRbp <= rbp {
+			break
+		}
+
+		visited[prevRbp] = true
+		rbp = prevRbp
+	}
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdStackFrame(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+
+	if !dbger.isProcessAlive() {
+		return errors.New("process is not alive")
+	}
+
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	var sz uint64 = 8
+	var err error
+	if len(args[2]) != 0 {
+		sz, err = strconv.ParseUint(args[3], 0, 64)
+		if err != nil {
+			return err
+		}
+	}
+
+	regs, err := dbger.getRegs()
+	if err != nil {
+		return err
+	}
+
+	if regs == nil {
+		return errors.New("nil registers")
+	}
+
+	rsp := regs.Rsp
+	rbp := regs.Rbp
+
+	type FrameInfo struct {
+		frameNum int
+		rbpAddr  uint64
+		ripAddr  uint64
+		rbpValue uint64
+		ripValue uint64
+	}
+
+	frames := []FrameInfo{}
+	currentRbp := rbp
+	visited := make(map[uint64]bool)
+
+	for frameNum := 0; frameNum < 20; frameNum++ {
+		if currentRbp == 0 || currentRbp%8 != 0 {
+			break
+		}
+
+		if visited[currentRbp] {
+			break
+		}
+		visited[currentRbp] = true
+
+		frame := FrameInfo{
+			frameNum: frameNum,
+			rbpAddr:  currentRbp,
+			ripAddr:  currentRbp + 8,
+		}
+
+		rbpData, err := dbger.GetMemory(8, uintptr(currentRbp))
+		if err == nil && len(rbpData) >= 8 {
+			frame.rbpValue = binary.LittleEndian.Uint64(rbpData)
+		}
+
+		ripData, err := dbger.GetMemory(8, uintptr(currentRbp+8))
+		if err == nil && len(ripData) >= 8 {
+			frame.ripValue = binary.LittleEndian.Uint64(ripData)
+		}
+
+		frames = append(frames, frame)
+
+		if frame.rbpValue == 0 || frame.rbpValue <= currentRbp {
+			break
+		}
+		currentRbp = frame.rbpValue
+	}
+
+	data, err := dbger.GetMemory(uint(sz*8), uintptr(rsp))
+	if err != nil {
+		return fmt.Errorf("error while getting stack memory: %v", err)
+	}
+
+	for i := 0; i < len(data); i += 8 {
+		if i+8 > len(data) {
+			break
+		}
+
+		addr := rsp + uint64(i)
+		value := binary.LittleEndian.Uint64(data[i : i+8])
+
+		annotation := ""
+		for _, frame := range frames {
+			if addr == frame.rbpAddr {
+				annotation = fmt.Sprintf(" <- frame #%d rbp", frame.frameNum)
+				break
+			} else if addr == frame.ripAddr {
+				annotation = fmt.Sprintf(" <- frame #%d ret", frame.frameNum)
+				if sym, offset, err := dbger.ResolveAddrToSymbol(value); err == nil && sym != nil {
+					if offset == 0 {
+						annotation += fmt.Sprintf(" (%s)", sym.Name)
+					} else {
+						annotation += fmt.Sprintf(" (%s+%d)", sym.Name, offset)
+					}
+				}
+				break
+			}
+		}
+
+		fmt.Printf("%s0x%016x%s: %s0x%016x%s%s%s%s\n",
+			ColorBlue, addr, ColorReset,
+			dbger.addr2color(value), value, ColorReset,
+			dbger.addr2some(value),
+			ColorReadWriteExecutable, annotation)
+	}
+
 	return nil
 }

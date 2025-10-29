@@ -460,3 +460,56 @@ func (dbger *TypeDbg) cmdVisualHeap(_ interface{}) error {
 
 	return nil
 }
+
+func (dbger *TypeDbg) cmdBins(_ interface{}) error {
+	hLine("tcache")
+	addr, sz, ok := func() (uint64, uint64, bool) {
+		for _, p := range procMapsDetail {
+			if strings.Contains(p.path, "heap") {
+				return p.start, p.end - p.start, true
+			}
+		}
+		return 0, 0, false
+	}()
+	if !ok {
+		return errors.New("heap not found")
+	}
+
+	code, err := dbger.GetMemory(uint(sz), uintptr(addr))
+	if err != nil {
+		return err
+	}
+	isSafeLinking := stateUndefined
+	if len(code) > tcacheMaxBins*2+tcacheMaxBins*8+0x10 {
+		tpts := (*tcachePerThreadStruct)(unsafe.Pointer(&code[0x10]))
+		for i, e := range tpts.entries {
+			if e == 0 {
+				continue
+			}
+			fmt.Printf("tcache[sz=%s0x%x%s][n=%s%d%s]\n", ColorCyan, 0x20+0x10*i, ColorReset, ColorCyan, tpts.counts[i], ColorReset)
+			fmt.Printf("%s0x%x%s -> ", ColorCyan, e, ColorReset)
+			var curr uint64 = e
+			for _ = range tpts.counts[i] - 1 {
+				tmp := binary.LittleEndian.Uint64(code[curr-addr : curr-addr+8])
+				if isSafeLinking == stateUndefined {
+					if tmp%0x10 != 0 {
+						isSafeLinking = stateTrue
+					} else {
+						isSafeLinking = stateFalse
+					}
+				}
+				if isSafeLinking == stateTrue {
+					curr = tmp ^ (curr >> 12)
+				} else {
+					curr = tmp
+				}
+				fmt.Printf("%s0x%x%s -> ", ColorCyan, curr, ColorReset)
+				if curr == 0 || curr-addr > uint64(len(code)) {
+					break
+				}
+			}
+		}
+	}
+
+	return nil
+}

@@ -53,7 +53,17 @@ func hLine(msg string) {
 	fmt.Printf("[" + msg + "]")
 }
 
+func hLineRaw() {
+	if term.IsTerminal(int(os.Stdout.Fd())) {
+		w, _, err := term.GetSize(int(os.Stdout.Fd()))
+		if err == nil && w > 0 {
+			fmt.Println(strings.Repeat("-", w))
+			return
+		}
+	}
+}
+
 func cls() {
-	fmt.Print("\033[2J") // Clear entire screen
-	fmt.Print("\033[H")  // Move cursor to top-left (1,1)
+	fmt.Print("\033[2J")
+	fmt.Print("\033[H")
 }
