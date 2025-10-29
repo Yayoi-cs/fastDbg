@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fastDbg/ebpf"
 	"fmt"
 	"github.com/chzyer/readline"
 	"io"
@@ -63,6 +64,12 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 		}
 	}
 
+	tracer, err := ebpf.NewTrace(dbger.pid)
+	if err != nil {
+		panic("EBPF Failed")
+	}
+	defer tracer.Close()
+
 	prev := ""
 
 	rl, err := readline.NewEx(&readline.Config{
@@ -83,6 +90,9 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 	}
 
 	for {
+		if ebpf.MapFlag {
+			dbger.loadBase()
+		}
 		if !dbger.isStart {
 			rl.SetPrompt("[fastDbg]$ ")
 		} else {

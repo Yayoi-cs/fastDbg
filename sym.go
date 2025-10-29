@@ -836,7 +836,6 @@ func (dbger *TypeDbg) Reload() error {
 		return nil
 	}
 	resolvedN = 0
-	dbger.loadBase()
 
 	isPie, err := dbger.isPIE()
 	if err != nil {
