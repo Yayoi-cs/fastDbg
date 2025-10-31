@@ -6,86 +6,101 @@ package ebpf
 #include <string.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include <linux/perf_event.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#include <stdio.h>
 
 struct event {
     unsigned int pid;
     unsigned long long syscall;
 };
 
-// Helper function to setup perf_event_attr (avoids union/field issues)
-static void setup_perf_attr(struct perf_event_attr *attr) {
-    memset(attr, 0, sizeof(*attr));
-    attr->type = PERF_TYPE_SOFTWARE;
-    attr->size = sizeof(*attr);
-    attr->config = PERF_COUNT_SW_BPF_OUTPUT;
-    attr->sample_period = 1;
-    attr->wakeup_events = 1;
-}
-
-static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
-                          int cpu, int group_fd, unsigned long flags) {
-    return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
-}
-
-static int read_perf_event(int fd, void *buf, size_t size) {
-    struct {
-        struct perf_event_header header;
-        char data[256];
-    } e;
-
-    int ret = read(fd, &e, sizeof(e));
-    if (ret <= 0) return ret;
-
-    if (e.header.type == PERF_RECORD_SAMPLE) {
-        memcpy(buf, e.data, size);
-        return size;
-    }
-    return 0;
-}
+void handleEvent(void *ctx, int cpu, void *data, unsigned int size);
+void handleLost(void *ctx, int cpu, unsigned long long lost_cnt);
 */
 import "C"
 
 import (
 	"fmt"
-	"syscall"
+	"sync"
+	"sync/atomic"
 	"unsafe"
 )
 
 var MapFlag bool = false
+var tracerRegistry sync.Map
+var nextTracerID atomic.Int64
 
 type Tracer struct {
-	pid    int
-	obj    *C.struct_bpf_object
-	links  []*C.struct_bpf_link
-	perfFd C.int
-	stop   chan struct{}
+	id    int64
+	pid   int
+	obj   *C.struct_bpf_object
+	links []*C.struct_bpf_link
+	pb    *C.struct_perf_buffer
+	stop  chan struct{}
+	wg    sync.WaitGroup
+}
+
+//export handleEvent
+func handleEvent(ctx unsafe.Pointer, cpu C.int, data unsafe.Pointer, size C.uint) {
+	tracerID := int64(uintptr(ctx))
+
+	val, ok := tracerRegistry.Load(tracerID)
+	if !ok {
+		return
+	}
+	t := val.(*Tracer)
+
+	event := (*C.struct_event)(data)
+
+	if int(event.pid) == t.pid {
+		syscallNum := uint64(event.syscall)
+		syscallName := "unknown"
+		if syscallNum == 9 {
+			syscallName = "mmap"
+		} else if syscallNum == 12 {
+			syscallName = "brk"
+		}
+
+		fmt.Printf("EBPF DETECT: PID %d called %s (syscall %d)\n",
+			event.pid, syscallName, syscallNum)
+		MapFlag = true
+	}
+}
+
+//export handleLost
+func handleLost(ctx unsafe.Pointer, cpu C.int, lostCnt C.ulonglong) {
+	fmt.Printf("Lost %d events on CPU %d\n", lostCnt, cpu)
 }
 
 func NewTrace(pid int) (*Tracer, error) {
 	t := &Tracer{
+		id:   nextTracerID.Add(1),
 		pid:  pid,
 		stop: make(chan struct{}),
 	}
+
+	tracerRegistry.Store(t.id, t)
 
 	objPath := C.CString("trace.ebpf.o")
 	defer C.free(unsafe.Pointer(objPath))
 
 	t.obj = C.bpf_object__open(objPath)
 	if t.obj == nil {
+		tracerRegistry.Delete(t.id)
 		return nil, fmt.Errorf("failed to open BPF object")
 	}
 
 	if C.bpf_object__load(t.obj) != 0 {
 		C.bpf_object__close(t.obj)
+		tracerRegistry.Delete(t.id)
 		return nil, fmt.Errorf("failed to load BPF object")
 	}
 
-	progMmap := C.bpf_object__find_program_by_name(t.obj, C.CString("trace_mmap"))
-	progBrk := C.bpf_object__find_program_by_name(t.obj, C.CString("trace_brk"))
+	progMmapName := C.CString("trace_mmap")
+	progBrkName := C.CString("trace_brk")
+	defer C.free(unsafe.Pointer(progMmapName))
+	defer C.free(unsafe.Pointer(progBrkName))
+
+	progMmap := C.bpf_object__find_program_by_name(t.obj, progMmapName)
+	progBrk := C.bpf_object__find_program_by_name(t.obj, progBrkName)
 
 	if progMmap == nil || progBrk == nil {
 		t.Close()
@@ -93,62 +108,61 @@ func NewTrace(pid int) (*Tracer, error) {
 	}
 
 	linkMmap := C.bpf_program__attach(progMmap)
-	linkBrk := C.bpf_program__attach(progBrk)
-
-	if linkMmap == nil || linkBrk == nil {
+	if linkMmap == nil {
 		t.Close()
-		return nil, fmt.Errorf("failed to attach BPF programs")
+		return nil, fmt.Errorf("failed to attach trace_mmap program")
 	}
-	t.links = append(t.links, linkMmap, linkBrk)
+	t.links = append(t.links, linkMmap)
 
-	eventsMap := C.bpf_object__find_map_by_name(t.obj, C.CString("events"))
+	linkBrk := C.bpf_program__attach(progBrk)
+	if linkBrk == nil {
+		t.Close()
+		return nil, fmt.Errorf("failed to attach trace_brk program")
+	}
+	t.links = append(t.links, linkBrk)
+
+	eventsMapName := C.CString("events")
+	defer C.free(unsafe.Pointer(eventsMapName))
+
+	eventsMap := C.bpf_object__find_map_by_name(t.obj, eventsMapName)
 	if eventsMap == nil {
 		t.Close()
 		return nil, fmt.Errorf("failed to find events map")
 	}
 	mapFd := C.bpf_map__fd(eventsMap)
 
-	// Use C helper function instead of accessing fields directly
-	var attr C.struct_perf_event_attr
-	C.setup_perf_attr(&attr)
+	ctx := unsafe.Pointer(uintptr(t.id))
 
-	t.perfFd = C.perf_event_open(&attr, -1, 0, -1, 0)
-	if t.perfFd < 0 {
+	t.pb = C.perf_buffer__new(
+		mapFd,
+		8,
+		C.perf_buffer_sample_fn(unsafe.Pointer(C.handleEvent)),
+		C.perf_buffer_lost_fn(unsafe.Pointer(C.handleLost)),
+		ctx, // Pass ID as "pointer" - it's really just an integer
+		nil,
+	)
+	if t.pb == nil {
 		t.Close()
-		return nil, fmt.Errorf("failed to open perf event")
+		return nil, fmt.Errorf("failed to create perf buffer")
 	}
 
-	cpu := C.int(0)
-	if C.bpf_map_update_elem(mapFd, unsafe.Pointer(&cpu), unsafe.Pointer(&t.perfFd), 0) != 0 {
-		t.Close()
-		return nil, fmt.Errorf("failed to update BPF map")
-	}
-
-	go t.eventLoop()
+	t.wg.Add(1)
+	go t.pollLoop()
 
 	return t, nil
 }
 
-func (t *Tracer) eventLoop() {
-	buf := make([]byte, 256)
+func (t *Tracer) pollLoop() {
+	defer t.wg.Done()
+
 	for {
 		select {
 		case <-t.stop:
 			return
 		default:
-			ret := C.read_perf_event(t.perfFd, unsafe.Pointer(&buf[0]), 256)
-			if ret > 0 {
-				var event struct {
-					Pid     uint32
-					Syscall uint64
-				}
-				event.Pid = *(*uint32)(unsafe.Pointer(&buf[0]))
-				event.Syscall = *(*uint64)(unsafe.Pointer(&buf[4]))
-
-				if int(event.Pid) == t.pid {
-					fmt.Printf("EBPF DETECT MAPPING")
-					MapFlag = true
-				}
+			ret := C.perf_buffer__poll(t.pb, 100)
+			if ret < 0 && ret != -4 {
+				fmt.Printf("Error polling perf buffer: %d\n", ret)
 			}
 		}
 	}
@@ -156,9 +170,11 @@ func (t *Tracer) eventLoop() {
 
 func (t *Tracer) Close() {
 	close(t.stop)
+	t.wg.Wait()
+	tracerRegistry.Delete(t.id)
 
-	if t.perfFd >= 0 {
-		syscall.Close(int(t.perfFd))
+	if t.pb != nil {
+		C.perf_buffer__free(t.pb)
 	}
 
 	for _, link := range t.links {

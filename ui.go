@@ -64,12 +64,6 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 		}
 	}
 
-	tracer, err := ebpf.NewTrace(dbger.pid)
-	if err != nil {
-		panic("EBPF Failed")
-	}
-	defer tracer.Close()
-
 	prev := ""
 
 	rl, err := readline.NewEx(&readline.Config{
@@ -92,6 +86,7 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 	for {
 		if ebpf.MapFlag {
 			dbger.loadBase()
+			ebpf.MapFlag = false
 		}
 		if !dbger.isStart {
 			rl.SetPrompt("[fastDbg]$ ")

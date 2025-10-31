@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fastDbg/ebpf"
 	"fmt"
 	"golang.org/x/sys/unix"
 	"os/exec"
@@ -178,6 +179,7 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 	if !ok {
 		return errors.New("invalid arguments")
 	}
+
 	tmpDbger, err := Run(dbger.path, args[2:]...)
 	if err != nil {
 		return err
@@ -185,6 +187,7 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 	mainDbger = *tmpDbger
 
 	dbger.Reload()
+	ebpf.NewTrace(dbger.pid)
 
 	for _, addr := range tmpBps {
 		_, err = dbger.NewBp(addr, dbger.pid)
@@ -237,6 +240,10 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 		return errors.New("debuggee has not started")
 	}
 	dbger.Reload()
+	if ebpf.MapFlag {
+		dbger.loadBase()
+		ebpf.MapFlag = false
+	}
 
 	hLine("registers")
 
