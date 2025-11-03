@@ -575,34 +575,25 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 		return err
 	}
 
-	pltSection := file.Section(".plt.sec")
-	if pltSection == nil {
-		pltSection = file.Section(".plt")
+	relPltSection := file.Section(".rela.plt")
+	if relPltSection == nil {
+		relPltSection = file.Section(".rel.plt")
 	}
 
-	if pltSection != nil {
-		relPltSection := file.Section(".rela.plt")
-		if relPltSection == nil {
-			relPltSection = file.Section(".rel.plt")
-		}
+	if relPltSection != nil {
+		relocations, err := parseRelocations(relPltSection, file)
+		if err == nil {
+			pltEntrySize := getPLTEntrySize(file.Machine)
 
-		if relPltSection != nil {
-			relocations, err := parseRelocations(relPltSection, file)
-			if err == nil {
-				pltEntrySize := getPLTEntrySize(file.Machine)
-				isModernPLT := (pltSection.Name == ".plt.sec")
-
+			// Process .plt.sec (modern secure PLT) if it exists
+			pltSecSection := file.Section(".plt.sec")
+			if pltSecSection != nil {
 				for i, reloc := range relocations {
 					if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
 						continue
 					}
 
-					var pltEntryAddr uint64
-					if isModernPLT {
-						pltEntryAddr = pltSection.Addr + uint64(i*pltEntrySize)
-					} else {
-						pltEntryAddr = pltSection.Addr + uint64((i+1)*pltEntrySize)
-					}
+					pltEntryAddr := pltSecSection.Addr + uint64(i*pltEntrySize)
 
 					symbol := dynSymbols[reloc.SymbolIndex]
 					symbolName := getSymbolName(symbol.NameOffset, dynStrings)
@@ -613,6 +604,48 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 					pltName := symbolName + "@plt"
 					if reloc.Addend != 0 {
 						pltName += fmt.Sprintf("+0x%x", reloc.Addend)
+					}
+
+					pltSym := Symbol{
+						Name:     pltName,
+						Addr:     pltEntryAddr - libRoots[0].base,
+						Size:     uint64(pltEntrySize),
+						Type:     elf.STT_FUNC,
+						Bind:     elf.STB_GLOBAL,
+						Section:  0,
+						LibIndex: 0,
+					}
+					symTable.AddSymbol(pltSym)
+				}
+			}
+
+			// Process .plt (traditional PLT) - these are the actual jump targets from GOT
+			pltSection := file.Section(".plt")
+			if pltSection != nil {
+				for i, reloc := range relocations {
+					if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
+						continue
+					}
+
+					// Traditional .plt has a 16-byte header, so first entry is at offset 16
+					pltEntryAddr := pltSection.Addr + uint64((i+1)*pltEntrySize)
+
+					symbol := dynSymbols[reloc.SymbolIndex]
+					symbolName := getSymbolName(symbol.NameOffset, dynStrings)
+					if symbolName == "" {
+						continue
+					}
+
+					// Only create these symbols if .plt.sec doesn't exist (to avoid duplicates)
+					// When .plt.sec exists, create these as internal PLT stubs
+					var pltName string
+					if pltSecSection != nil {
+						pltName = symbolName + "@plt.stub"
+					} else {
+						pltName = symbolName + "@plt"
+						if reloc.Addend != 0 {
+							pltName += fmt.Sprintf("+0x%x", reloc.Addend)
+						}
 					}
 
 					pltSym := Symbol{
@@ -1214,6 +1247,37 @@ func (dbger *TypeDbg) AnalyzePLTGOTInfo() ([]PLTEntry, []GOTEntry, error) {
 		}
 	}
 
+	// Match GOT entries with .rela.plt relocations first
+	relPltSection := file.Section(".rela.plt")
+	if relPltSection == nil {
+		relPltSection = file.Section(".rel.plt")
+	}
+
+	if relPltSection != nil {
+		pltRelocations, err := parseRelocations(relPltSection, file)
+		if err == nil {
+			for _, reloc := range pltRelocations {
+				if reloc.SymbolIndex >= uint32(len(dynSymbols)) {
+					continue
+				}
+
+				symbol := dynSymbols[reloc.SymbolIndex]
+				symbolName := getSymbolName(symbol.NameOffset, dynStrings)
+				if symbolName == "" {
+					continue
+				}
+
+				for i := range gotEntries {
+					if gotEntries[i].Address-libRoots[0].base == reloc.Offset {
+						gotEntries[i].Name = symbolName
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Match GOT entries with .rela.dyn relocations
 	relDynSection := file.Section(".rela.dyn")
 	if relDynSection == nil {
 		relDynSection = file.Section(".rel.dyn")

@@ -219,11 +219,6 @@ func Run(bin string, args ...string) (*TypeDbg, error) {
 		return nil, err
 	}
 
-	err = dbger.hookSyscall()
-	if err != nil {
-		return nil, err
-	}
-
 	dbger.rip, err = dbger.GetRip()
 	if err != nil {
 		return nil, err
@@ -296,11 +291,6 @@ func Attach(pid int) (*TypeDbg, error) {
 		return nil, fmt.Errorf("wait failed: %v", waitErr)
 	}
 
-	err = dbger.hookSyscall()
-	if err != nil {
-		return nil, err
-	}
-
 	dbger.rip, err = dbger.GetRip()
 	if err != nil {
 		return nil, err
@@ -329,12 +319,6 @@ func (dbger *TypeDbg) Detach() error {
 func (dbger *TypeDbg) interrupt() error {
 	return doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceInterrupt(dbger.pid)
-	})
-}
-
-func (dbger *TypeDbg) hookSyscall() error {
-	return doSyscallErr(dbger.rpc, func() error {
-		return unix.PtraceSyscall(dbger.pid, 0)
 	})
 }
 

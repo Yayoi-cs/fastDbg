@@ -19,6 +19,7 @@ import "C"
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -52,16 +53,9 @@ func handleEvent(ctx unsafe.Pointer, cpu C.int, data unsafe.Pointer, size C.uint
 
 	if int(event.pid) == t.pid {
 		syscallNum := uint64(event.syscall)
-		syscallName := "unknown"
-		if syscallNum == 9 {
-			syscallName = "mmap"
-		} else if syscallNum == 12 {
-			syscallName = "brk"
+		if syscallNum == unix.SYS_MMAP || syscallNum == unix.SYS_BRK || syscallNum == unix.SYS_MUNMAP {
+			MapFlag = true
 		}
-
-		fmt.Printf("EBPF DETECT: PID %d called %s (syscall %d)\n",
-			event.pid, syscallName, syscallNum)
-		MapFlag = true
 	}
 }
 
