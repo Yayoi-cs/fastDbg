@@ -741,7 +741,8 @@ func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 		Printf("Warning: failed to get shared libraries: %v\n", err)
 	} else {
 		for _, lib := range libs {
-			go func() {
+			//go func() {
+			func() {
 				defer wg.Done()
 				libRoot := rootStruct{
 					name: lib,

@@ -294,12 +294,24 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 	}
 
 	for i := 0; i < len(code); i += 8 {
-		if i+8 < len(code) {
+		if i+8 <= len(code) {
 			address := binary.LittleEndian.Uint64(code[i : i+8])
+
+			// Get symbol info without expensive recursion to avoid hanging
+			var addrInfo string
+			sym, off, err := dbger.ResolveAddrToSymbol(address)
+			color := dbger.addr2color(address)
+			if err == nil {
+				if off == 0 {
+					addrInfo = fmt.Sprintf("%s<%s>%s", color, sym.Name, ColorReset)
+				} else {
+					addrInfo = fmt.Sprintf("%s<%s+0x%x>%s", color, sym.Name, off, ColorReset)
+				}
+			}
+
 			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)|%s0x%016x%s%s\n",
-				ColorBlue, addr+uint64(i), ColorReset, i, i/8, dbger.addr2color(address),
-				address,
-				dbger.addr2some(address), ColorReset)
+				ColorBlue, addr+uint64(i), ColorReset, i, i/8, color,
+				address, addrInfo, ColorReset)
 		}
 	}
 	file.Close()

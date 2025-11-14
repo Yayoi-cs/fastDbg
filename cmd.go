@@ -39,6 +39,12 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(got|GOT)\s*$`), (*TypeDbg).cmdGot},
 	{regexp.MustCompile(`^\s*(bins|BINS)\s*$`), (*TypeDbg).cmdBins},
 	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
+	{regexp.MustCompile(`^\s*(set32)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
+	{regexp.MustCompile(`^\s*(set16)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet16},
+	{regexp.MustCompile(`^\s*(set8)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet8},
+	{regexp.MustCompile(`^\s*(set)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet},
+	{regexp.MustCompile(`^\s*(xor)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdXor},
+	{regexp.MustCompile(`^\s*(tel|telescope)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdTelescope},
 	{regexp.MustCompile(`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpByte},
 	{regexp.MustCompile(`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpDword},
 	{regexp.MustCompile(`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpQword},
@@ -464,16 +470,22 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 		if got, exists := gotMap[plt.OriginalName]; exists {
 			gotAddr = fmt.Sprintf("0x%012x", got.Address)
 
-			if got.Value != 0 {
+			// Always read from process memory for accurate runtime values (especially for PIE)
+			data, err := dbger.GetMemory(8, uintptr(got.Address))
+			if err == nil && len(data) >= 8 {
+				value := binary.LittleEndian.Uint64(data)
 				resolved := ""
-				if sym, _, err := dbger.ResolveAddrToSymbol(got.Value); err == nil {
-					resolved = fmt.Sprintf(" <%s>", sym.Name)
+				if value != 0 {
+					if sym, _, err := dbger.ResolveAddrToSymbol(value); err == nil {
+						resolved = fmt.Sprintf(" <%s>", sym.Name)
+					}
 				}
-				gotValue = fmt.Sprintf("0x%012x%s", got.Value, resolved)
+				gotValue = fmt.Sprintf("0x%012x%s", value, resolved)
 			} else {
 				gotValue = "0x000000000000"
 			}
 		} else {
+			// Fallback: search through unnamed GOT entries
 			for _, got := range gotEntries {
 				if strings.HasPrefix(got.Name, "GOT[") {
 					data, err := dbger.GetMemory(8, uintptr(got.Address))
@@ -517,24 +529,17 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 		gotAddr := fmt.Sprintf("0x%012x", got.Address)
 		gotValue := "0x000000000000"
 
-		if got.Value != 0 {
+		// Always read from process memory for accurate runtime values (especially for PIE)
+		data, err := dbger.GetMemory(8, uintptr(got.Address))
+		if err == nil && len(data) >= 8 {
+			value := binary.LittleEndian.Uint64(data)
 			resolved := ""
-			if sym, _, err := dbger.ResolveAddrToSymbol(got.Value); err == nil {
-				resolved = fmt.Sprintf(" <%s>", sym.Name)
-			}
-			gotValue = fmt.Sprintf("0x%012x%s", got.Value, resolved)
-		} else {
-			data, err := dbger.GetMemory(8, uintptr(got.Address))
-			if err == nil {
-				value := binary.LittleEndian.Uint64(data)
-				if value != 0 {
-					resolved := ""
-					if sym, _, err := dbger.ResolveAddrToSymbol(value); err == nil {
-						resolved = fmt.Sprintf(" <%s>", sym.Name)
-					}
-					gotValue = fmt.Sprintf("0x%012x%s", value, resolved)
+			if value != 0 {
+				if sym, _, err := dbger.ResolveAddrToSymbol(value); err == nil {
+					resolved = fmt.Sprintf(" <%s>", sym.Name)
 				}
 			}
+			gotValue = fmt.Sprintf("0x%012x%s", value, resolved)
 		}
 
 		printf("%-27s | %s | %s | %s\n", got.Name, pltAddr, gotAddr, gotValue)
@@ -904,4 +909,100 @@ func (dbger *TypeDbg) cmdStackFrame(a interface{}) error {
 	}
 
 	return nil
+}
+
+func (dbger *TypeDbg) cmdSet(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	val, err := strconv.ParseUint(args[3], 0, 64)
+	if err != nil {
+		return err
+	}
+	valBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(valBytes, val)
+	return dbger.SetMemory(valBytes, uintptr(addr))
+}
+
+func (dbger *TypeDbg) cmdSet32(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	val, err := strconv.ParseUint(args[3], 0, 32)
+	if err != nil {
+		return err
+	}
+	valBytes := make([]byte, 4)
+	binary.LittleEndian.PutUint32(valBytes, uint32(val))
+	return dbger.SetMemory(valBytes, uintptr(addr))
+}
+
+func (dbger *TypeDbg) cmdSet16(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	val, err := strconv.ParseUint(args[3], 0, 16)
+	if err != nil {
+		return err
+	}
+	valBytes := make([]byte, 2)
+	binary.LittleEndian.PutUint16(valBytes, uint16(val))
+	return dbger.SetMemory(valBytes, uintptr(addr))
+}
+
+func (dbger *TypeDbg) cmdSet8(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	val, err := strconv.ParseUint(args[3], 0, 8)
+	if err != nil {
+		return err
+	}
+	valBytes := []byte{byte(val)}
+	return dbger.SetMemory(valBytes, uintptr(addr))
+}
+
+func (dbger *TypeDbg) cmdXor(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	key, err := strconv.ParseUint(args[3], 0, 64)
+	if err != nil {
+		return err
+	}
+	memByte, err := dbger.GetMemory(8, uintptr(addr))
+	if err != nil {
+		return err
+	}
+	ord := binary.LittleEndian.Uint64(memByte)
+	res := ord ^ key
+	fmt.Printf("%s%x%s xor %s%x%s -> %s%x%s\n", ColorCyan, ord, ColorReset, ColorCyan, key, ColorReset, ColorCyan, res, ColorReset)
+	resBytes := make([]byte, 8)
+	binary.LittleEndian.PutUint64(resBytes, res)
+	return dbger.SetMemory(resBytes, uintptr(addr))
 }
