@@ -38,12 +38,13 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`), (*TypeDbg).cmdSym},
 	{regexp.MustCompile(`^\s*(got|GOT)\s*$`), (*TypeDbg).cmdGot},
 	{regexp.MustCompile(`^\s*(bins|BINS)\s*$`), (*TypeDbg).cmdBins},
+	{regexp.MustCompile(`^\s*(fs|fs_base)\s*$`), (*TypeDbg).cmdFs},
 	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
-	{regexp.MustCompile(`^\s*(set32)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
-	{regexp.MustCompile(`^\s*(set16)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet16},
-	{regexp.MustCompile(`^\s*(set8)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet8},
-	{regexp.MustCompile(`^\s*(set)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet},
-	{regexp.MustCompile(`^\s*(xor)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdXor},
+	{regexp.MustCompile(`^\s*(set32)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
+	{regexp.MustCompile(`^\s*(set16)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet16},
+	{regexp.MustCompile(`^\s*(set8)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet8},
+	{regexp.MustCompile(`^\s*(set)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet},
+	{regexp.MustCompile(`^\s*(xor)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdXor},
 	{regexp.MustCompile(`^\s*(tel|telescope)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdTelescope},
 	{regexp.MustCompile(`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpByte},
 	{regexp.MustCompile(`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpDword},
@@ -912,17 +913,21 @@ func (dbger *TypeDbg) cmdStackFrame(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdSet(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
 	}
-	addr, err := strconv.ParseUint(args[2], 0, 64)
-	if err != nil {
-		return err
-	}
+
 	val, err := strconv.ParseUint(args[3], 0, 64)
 	if err != nil {
 		return err
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		dbger.SetRegs(args[2], val)
 	}
 	valBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(valBytes, val)
@@ -930,6 +935,9 @@ func (dbger *TypeDbg) cmdSet(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdSet32(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -948,6 +956,9 @@ func (dbger *TypeDbg) cmdSet32(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdSet16(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -966,6 +977,9 @@ func (dbger *TypeDbg) cmdSet16(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdSet8(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -983,6 +997,9 @@ func (dbger *TypeDbg) cmdSet8(a interface{}) error {
 }
 
 func (dbger *TypeDbg) cmdXor(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
@@ -1005,4 +1022,40 @@ func (dbger *TypeDbg) cmdXor(a interface{}) error {
 	resBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(resBytes, res)
 	return dbger.SetMemory(resBytes, uintptr(addr))
+}
+
+func (dbger *TypeDbg) cmdFs(a interface{}) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+	fsBase, err := dbger.GetFs_base()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("fs_base = %s%x%s\n", ColorCyan, fsBase, ColorReset)
+
+	data, err := dbger.GetMemory(8*0x10, uintptr(fsBase))
+	if err != nil {
+		return err
+	}
+	hLine("fs dump")
+	for i := range 0xf {
+		fmt.Printf(
+			"%s0x%016x%s: %s%016x%s",
+			ColorBlue,
+			fsBase+uint64(i*0x8),
+			ColorReset,
+			ColorCyan,
+			binary.LittleEndian.Uint64(data[i*0x8:i*0x8+8]),
+			ColorReset)
+
+		if i == 5 {
+			fmt.Println(" <- canary")
+		} else if i == 6 {
+			fmt.Println(" <- mangling key")
+		} else {
+			fmt.Println("")
+		}
+	}
+	return nil
 }
