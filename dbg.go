@@ -480,14 +480,14 @@ func (dbger *TypeDbg) Step() error {
 }
 
 func (dbger *TypeDbg) formatPtraceError(operation string, err error) error {
-	if err == unix.ESRCH {
+	switch err {
+	case unix.ESRCH:
 		return fmt.Errorf("%s failed: process %d does not exist or exited", operation, dbger.pid)
-	}
-	if err == unix.EPERM {
+	case unix.EPERM:
 		return fmt.Errorf("%s failed: permission denied", operation)
-	}
-	if err == unix.EBUSY {
+	case unix.EBUSY:
 		return fmt.Errorf("%s failed: process is busy", operation)
+	default:
+		return fmt.Errorf("%s failed: %v", operation, err)
 	}
-	return fmt.Errorf("%s failed: %v", operation, err)
 }

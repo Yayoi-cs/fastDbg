@@ -1,4 +1,5 @@
 capstone
+sample
 fastDbg
 trace.ebpf.o
-sample
+sample/*
