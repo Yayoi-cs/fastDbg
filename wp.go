@@ -57,11 +57,11 @@ func (dbger *TypeDbg) SetWatchpoint(wpAddr uint64, wpSize uint64, wpCondition ui
 
 	buf := make([]byte, 8)
 	err := doSyscallErr(dbger.rpc, func() error {
-		_, err := unix.PtracePeekData(dbger.pid, USER_DR7_OFFSET, buf)
+		_, err := unix.PtracePeekUser(dbger.pid, USER_DR7_OFFSET, buf)
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("PtracePeekData failed")
+		return fmt.Errorf("PtracePeekUser failed")
 	}
 
 	dr7 := binary.LittleEndian.Uint64(buf)
@@ -75,7 +75,7 @@ func (dbger *TypeDbg) SetWatchpoint(wpAddr uint64, wpSize uint64, wpCondition ui
 	if err != nil {
 		return fmt.Errorf("PtracePokeUser failed")
 	}
-	var enableBit uint64 = 18 + (slot * 4)
+	var enableBit uint64 = 1 << (slot * 2) // Set local enable bit for DR0-DR3 at position 0, 2, 4, or 6
 	var cShift uint64 = 16 + (slot * 4)
 	var cBits uint64 = wpCondition << cShift
 	var sShift uint64 = 18 + (slot * 4)
@@ -115,11 +115,11 @@ func (dbger *TypeDbg) clearWatchpoint(slot uint64) error {
 	}
 	buf := make([]byte, 8)
 	err = doSyscallErr(dbger.rpc, func() error {
-		_, err := unix.PtracePeekData(dbger.pid, USER_DR7_OFFSET, buf)
+		_, err := unix.PtracePeekUser(dbger.pid, USER_DR7_OFFSET, buf)
 		return err
 	})
 	if err != nil {
-		return fmt.Errorf("PtracePeekData failed")
+		return fmt.Errorf("PtracePeekUser failed")
 	}
 
 	dr7 := binary.LittleEndian.Uint64(buf)
