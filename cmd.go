@@ -22,6 +22,8 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(pie|PIE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdBreakPie},
 	{regexp.MustCompile(`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdEnable},
 	{regexp.MustCompile(`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdDisable},
+	{regexp.MustCompile(`^\s*(wp)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdWp},
+	{regexp.MustCompile(`^\s*(wp d)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdWpDel},
 	{regexp.MustCompile(`^\s*(disass)(\s+(0[xx][0-9a-fa-f]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDisass},
 	{regexp.MustCompile(`^\s*(stackframe|stkf|STACKFRAME|STKF)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdStackFrame},
 	{regexp.MustCompile(`^\s*(p|print|P|PRINT)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdPrint},
@@ -33,6 +35,7 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(step|STEP)\s*$`), (*TypeDbg).cmdStep},
 	{regexp.MustCompile(`^\s*(context|CONTEXT)\s*$`), (*TypeDbg).cmdContext},
 	{regexp.MustCompile(`^\s*(color|COLOR)\s*$`), (*TypeDbg).cmdColor},
+	{regexp.MustCompile(`^\s*(wp list)\s*$`), (*TypeDbg).cmdWpList},
 	{regexp.MustCompile(`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdStack},
 	{regexp.MustCompile(`^\s*(vmmap|VMMAP)(\s+\w+)*\s*$`), (*TypeDbg).cmdVmmap},
 	{regexp.MustCompile(`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`), (*TypeDbg).cmdSym},
@@ -50,6 +53,7 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpDword},
 	{regexp.MustCompile(`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDumpQword},
 	{regexp.MustCompile(`^\s*(bt|backtrace|BT|BACKTRACE)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdBacktrace},
+	{regexp.MustCompile(`^\s*(simd|xmm|ymm|SIMD|XMM|YMM)\s*$`), (*TypeDbg).cmdSIMD},
 }
 
 func (dbger *TypeDbg) cmdExec(req string) error {
@@ -486,7 +490,6 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 				gotValue = "0x000000000000"
 			}
 		} else {
-			// Fallback: search through unnamed GOT entries
 			for _, got := range gotEntries {
 				if strings.HasPrefix(got.Name, "GOT[") {
 					data, err := dbger.GetMemory(8, uintptr(got.Address))
@@ -1024,7 +1027,7 @@ func (dbger *TypeDbg) cmdXor(a interface{}) error {
 	return dbger.SetMemory(resBytes, uintptr(addr))
 }
 
-func (dbger *TypeDbg) cmdFs(a interface{}) error {
+func (dbger *TypeDbg) cmdFs(_ interface{}) error {
 	if !dbger.isStart {
 		return errors.New("debuggee has not started")
 	}
@@ -1058,4 +1061,56 @@ func (dbger *TypeDbg) cmdFs(a interface{}) error {
 		}
 	}
 	return nil
+}
+
+func (dbger *TypeDbg) cmdWpList(_ interface{}) error {
+	for i, s := range slotList {
+		if s.flg {
+			fmt.Printf("[%d] %s%016x%s READ/WRITE\n", i, ColorCyan, s.addr, ColorReset)
+		} else {
+			fmt.Printf("[%d] %sidle%s\n", i, ColorRed, ColorReset)
+		}
+	}
+
+	return nil
+}
+
+func (dbger *TypeDbg) cmdWp(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+
+	err = dbger.SetWatchpoint(addr, WP_SIZE_1, WP_READWRITE)
+
+	if err == nil {
+		fmt.Printf("New watchpoint %s%016x%s with WP_READWRITE\n", ColorCyan, addr, ColorReset)
+		return nil
+	}
+
+	return err
+}
+
+func (dbger *TypeDbg) cmdWpDel(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+
+	err = dbger.clearWatchpoint(addr)
+
+	if err == nil {
+		fmt.Printf("%swatchpoint removed: %016x%s\n", ColorRed, addr, ColorReset)
+		return nil
+	}
+
+	return err
 }

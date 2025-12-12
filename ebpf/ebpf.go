@@ -132,7 +132,7 @@ func NewTrace(pid int) (*Tracer, error) {
 		8,
 		C.perf_buffer_sample_fn(unsafe.Pointer(C.handleEvent)),
 		C.perf_buffer_lost_fn(unsafe.Pointer(C.handleLost)),
-		ctx, // Pass ID as "pointer" - it's really just an integer
+		ctx,
 		nil,
 	)
 	if t.pb == nil {
