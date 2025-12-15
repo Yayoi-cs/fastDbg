@@ -491,3 +491,15 @@ func (dbger *TypeDbg) formatPtraceError(operation string, err error) error {
 		return fmt.Errorf("%s failed: %v", operation, err)
 	}
 }
+
+func (dbger *TypeDbg) GetProcMaps() []*proc {
+	return procMapsDetail
+}
+
+func (dbger *TypeDbg) DisassOne(addr uintptr) (*string, error) {
+	return dbger.disassOne(addr)
+}
+
+func (dbger *TypeDbg) IsActive() bool {
+	return dbger.isStart && dbger.isProcessAlive()
+}

@@ -43,7 +43,6 @@ const (
 	NT_X86_XSTATE = 0x202
 )
 
-// XSAVE state component bits
 const (
 	XSTATE_FP        = 0x1
 	XSTATE_SSE       = 0x2
@@ -143,12 +142,8 @@ func (dbger *TypeDbg) cmdSIMD(a interface{}) error {
 	if len(extRegs) < 512 {
 		return fmt.Errorf("invalid XSAVE buffer size: %d bytes", len(extRegs))
 	}
-
-	// Parse XSAVE structure
 	xsave := (*C.struct_xsave_struct)(unsafe.Pointer(&extRegs[0]))
 	xstateBv := uint64(xsave.header.xstate_bv)
-
-	// Display SSE status register
 	mxcsr := uint32(xsave.i387.mxcsr)
 	fmt.Printf("MXCSR: %s0x%08x%s", ColorCyan, mxcsr, ColorReset)
 	fmt.Printf(" [")
@@ -198,7 +193,6 @@ func (dbger *TypeDbg) cmdSIMD(a interface{}) error {
 	hLine("XMM Registers (SSE - 128 bit)")
 	for i := 0; i < 16; i++ {
 		xmmData := make([]byte, 16)
-		// Copy XMM register data (16 bytes)
 		for j := 0; j < 16; j++ {
 			xmmData[j] = *(*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&xsave.i387.xmm_space[0])) + uintptr(i*16+j)))
 		}

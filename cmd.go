@@ -475,7 +475,6 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 		if got, exists := gotMap[plt.OriginalName]; exists {
 			gotAddr = fmt.Sprintf("0x%012x", got.Address)
 
-			// Always read from process memory for accurate runtime values (especially for PIE)
 			data, err := dbger.GetMemory(8, uintptr(got.Address))
 			if err == nil && len(data) >= 8 {
 				value := binary.LittleEndian.Uint64(data)
@@ -533,7 +532,6 @@ func (dbger *TypeDbg) cmdGot(a interface{}) error {
 		gotAddr := fmt.Sprintf("0x%012x", got.Address)
 		gotValue := "0x000000000000"
 
-		// Always read from process memory for accurate runtime values (especially for PIE)
 		data, err := dbger.GetMemory(8, uintptr(got.Address))
 		if err == nil && len(data) >= 8 {
 			value := binary.LittleEndian.Uint64(data)

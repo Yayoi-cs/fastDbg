@@ -5,54 +5,11 @@ import (
 	"fmt"
 	"github.com/chzyer/readline"
 	"io"
-	"regexp"
 	"strings"
 )
 
 func (dbger *TypeDbg) resolveSymbols(cmd string) (string, error) {
-	symPattern := regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_@.+-]*)`)
-
-	var resolveErr error
-	result := symPattern.ReplaceAllStringFunc(cmd, func(match string) string {
-		symName := strings.TrimPrefix(match, "$")
-
-		registerNames := []string{
-			"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
-			"r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
-			"rip", "eflags", "cs", "ss", "ds", "es", "fs", "gs",
-			"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp",
-			"ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
-			"al", "bl", "cl", "dl", "ah", "bh", "ch", "dh",
-		}
-
-		for _, reg := range registerNames {
-			if strings.EqualFold(symName, reg) {
-				regVal, err := dbger.GetRegs(symName)
-				if err != nil {
-					LogError(err.Error())
-					return match
-				} else {
-					return fmt.Sprintf("0x%x", regVal)
-				}
-			}
-		}
-
-		sym, err := dbger.ResolveSymbolToAddr(symName)
-		if err != nil {
-			resolveErr = err
-			LogError("Failed to resolve symbol '%s': %v", symName, err)
-			return match
-		}
-
-		actualAddr := sym.Addr
-		if sym.LibIndex < len(libRoots) {
-			actualAddr += libRoots[sym.LibIndex].base
-		}
-
-		return fmt.Sprintf("0x%x", actualAddr)
-	})
-
-	return result, resolveErr
+	return dbger.resolveSymbolsNew(cmd)
 }
 
 func (dbger *TypeDbg) Interactive(doContext bool) {

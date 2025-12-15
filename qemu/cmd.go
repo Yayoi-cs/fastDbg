@@ -8,9 +8,11 @@ import (
 	"golang.org/x/term"
 	"io"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type cmdHandler struct {
@@ -20,6 +22,7 @@ type cmdHandler struct {
 
 var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*QemuDbg).cmdBreak},
+	{regexp.MustCompile(`^\s*(p|print|P|PRINT)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*QemuDbg).cmdPrint},
 	{regexp.MustCompile(`^\s*(db|xxd)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdXxd},
 	{regexp.MustCompile(`^\s*(dd|xxd\s+dword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdXxdDword},
 	{regexp.MustCompile(`^\s*(dq|xxd\s+qword)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdXxdQword},
@@ -92,6 +95,24 @@ func (q *QemuDbg) cmdBreak(a interface{}) error {
 	}
 
 	fmt.Printf("Breakpoint set at %s0x%016x%s\n", ColorCyan, addr, ColorReset)
+	return nil
+}
+
+func (q *QemuDbg) cmdPrint(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	val, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("HEX: %s0x%x%s DEC: %s%d%s OCT: %s%o%s BIN: %s%b%s\n",
+		ColorCyan, val, ColorReset,
+		ColorCyan, val, ColorReset,
+		ColorCyan, val, ColorReset,
+		ColorCyan, val, ColorReset)
+
 	return nil
 }
 
@@ -444,7 +465,7 @@ func (q *QemuDbg) cmdTelescope(a interface{}) error {
 	}
 
 	var addr uint64
-	var n uint64 = 16
+	var n uint64 = 0x80
 	addr, err := strconv.ParseUint(args[2], 0, 64)
 	if err != nil {
 		return err
@@ -461,15 +482,37 @@ func (q *QemuDbg) cmdTelescope(a interface{}) error {
 		return err
 	}
 
+	tempFile := fmt.Sprintf("/tmp/fastDbg_qemu_%d_%d", os.Getpid(), time.Now().Unix())
+	file, err := os.Create(tempFile)
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		file.Close()
+		os.Remove(tempFile)
+	}()
+
 	for i := 0; i < len(data); i += 8 {
 		if i+8 <= len(data) {
-			offset := uint64(i)
 			address := binary.LittleEndian.Uint64(data[i : i+8])
-			fmt.Printf("%s0x%016x%s: %s0x%016x%s\n",
-				ColorBlue, addr+offset, ColorReset,
+			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)| %s0x%016x%s\n",
+				ColorBlue, addr+uint64(i), ColorReset,
+				i, i/8,
 				ColorCyan, address, ColorReset)
 		}
 	}
+	file.Close()
+
+	cmd := exec.Command("less", "-SR", tempFile)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -639,6 +682,11 @@ func hLineRaw() {
 	fmt.Println(strings.Repeat("-", 80))
 }
 
+func (q *QemuDbg) resolveSymbols(cmd string) (string, error) {
+	resolver := NewQemuSymbolResolver(q)
+	return ResolveSymbolsInCommand(cmd, resolver)
+}
+
 func (q *QemuDbg) Interactive() {
 	prev := ""
 
@@ -694,7 +742,12 @@ func (q *QemuDbg) Interactive() {
 
 		prev = req
 
-		err = q.CmdExec(req)
+		resolvedReq := req
+		if strings.Contains(req, "$") {
+			resolvedReq, _ = q.resolveSymbols(req)
+		}
+
+		err = q.CmdExec(resolvedReq)
 		if err != nil {
 			LogError(err.Error())
 		}

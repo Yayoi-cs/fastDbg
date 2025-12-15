@@ -585,7 +585,6 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 		if err == nil {
 			pltEntrySize := getPLTEntrySize(file.Machine)
 
-			// Process .plt.sec (modern secure PLT) if it exists
 			pltSecSection := file.Section(".plt.sec")
 			if pltSecSection != nil {
 				for i, reloc := range relocations {
@@ -619,7 +618,6 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 				}
 			}
 
-			// Process .plt (traditional PLT) - these are the actual jump targets from GOT
 			pltSection := file.Section(".plt")
 			if pltSection != nil {
 				for i, reloc := range relocations {
@@ -627,7 +625,6 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 						continue
 					}
 
-					// Traditional .plt has a 16-byte header, so first entry is at offset 16
 					pltEntryAddr := pltSection.Addr + uint64((i+1)*pltEntrySize)
 
 					symbol := dynSymbols[reloc.SymbolIndex]
@@ -636,8 +633,6 @@ func (dbger *TypeDbg) analyzePLTGOT(filename string) error {
 						continue
 					}
 
-					// Only create these symbols if .plt.sec doesn't exist (to avoid duplicates)
-					// When .plt.sec exists, create these as internal PLT stubs
 					var pltName string
 					if pltSecSection != nil {
 						pltName = symbolName + "@plt.stub"
@@ -741,7 +736,6 @@ func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 		Printf("Warning: failed to get shared libraries: %v\n", err)
 	} else {
 		for _, lib := range libs {
-			//go func() {
 			func() {
 				defer wg.Done()
 				libRoot := rootStruct{
@@ -773,15 +767,6 @@ func (dbger *TypeDbg) loadSymbolsFromFile(filename string, libIndex int) error {
 		return err
 	}
 	defer file.Close()
-
-	if err := dbger.loadSymbolSection(file, ".symtab", ".strtab", libIndex); err != nil {
-		// Printf("failed to load static symbols from %s: %v\n", filename, err)
-	}
-
-	if err := dbger.loadSymbolSection(file, ".dynsym", ".dynstr", libIndex); err != nil {
-		// Printf("failed to load dynamic symbols from %s: %v\n", filename, err)
-	}
-
 	return nil
 }
 
@@ -1248,7 +1233,6 @@ func (dbger *TypeDbg) AnalyzePLTGOTInfo() ([]PLTEntry, []GOTEntry, error) {
 		}
 	}
 
-	// Match GOT entries with .rela.plt relocations first
 	relPltSection := file.Section(".rela.plt")
 	if relPltSection == nil {
 		relPltSection = file.Section(".rel.plt")
@@ -1278,7 +1262,6 @@ func (dbger *TypeDbg) AnalyzePLTGOTInfo() ([]PLTEntry, []GOTEntry, error) {
 		}
 	}
 
-	// Match GOT entries with .rela.dyn relocations
 	relDynSection := file.Section(".rela.dyn")
 	if relDynSection == nil {
 		relDynSection = file.Section(".rel.dyn")

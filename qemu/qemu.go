@@ -45,10 +45,7 @@ func Connect(host string, port int) (*QemuDbg, error) {
 
 func (q *QemuDbg) Close() error {
 	if q.conn != nil {
-		// Send detach packet to properly disconnect from QEMU
-		// This allows QEMU to continue running normally
 		q.sendPacket("D")
-		// Don't wait for response, just close
 		return q.conn.Close()
 	}
 	return nil
@@ -61,21 +58,18 @@ func (q *QemuDbg) sendPacket(data string) error {
 	}
 	packet := fmt.Sprintf("$%s#%02x", data, checksum)
 
-	// Retry up to 3 times if we get a NACK
 	for retry := 0; retry < 3; retry++ {
 		_, err := q.conn.Write([]byte(packet))
 		if err != nil {
 			return err
 		}
 
-		// Wait for acknowledgment with timeout
 		q.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		ackBuf := make([]byte, 1)
 		n, err := q.conn.Read(ackBuf)
-		q.conn.SetReadDeadline(time.Time{}) // Clear deadline
+		q.conn.SetReadDeadline(time.Time{})
 
 		if err != nil {
-			// On timeout or error, retry
 			if retry < 2 {
 				continue
 			}
@@ -83,13 +77,10 @@ func (q *QemuDbg) sendPacket(data string) error {
 		}
 
 		if n > 0 && ackBuf[0] == '+' {
-			return nil // Success
+			return nil
 		} else if n > 0 && ackBuf[0] == '-' {
-			// NACK received, retry
 			continue
 		}
-		// If we got something else, try to handle it as part of response
-		// This can happen with packets that don't expect ack
 		return nil
 	}
 
@@ -97,9 +88,8 @@ func (q *QemuDbg) sendPacket(data string) error {
 }
 
 func (q *QemuDbg) recvPacket() (string, error) {
-	// Set read timeout to prevent infinite blocking
 	q.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	defer q.conn.SetReadDeadline(time.Time{}) // Clear deadline when done
+	defer q.conn.SetReadDeadline(time.Time{})
 
 	buf := make([]byte, 8192)
 	n, err := q.conn.Read(buf)
@@ -109,41 +99,31 @@ func (q *QemuDbg) recvPacket() (string, error) {
 
 	response := string(buf[:n])
 
-	// Handle ack/nack at beginning
 	response = strings.TrimPrefix(response, "+")
 	response = strings.TrimPrefix(response, "-")
-
-	// Parse packet format: $<data>#<checksum>
 	if strings.Contains(response, "$") && strings.Contains(response, "#") {
 		startIdx := strings.Index(response, "$")
 		endIdx := strings.Index(response, "#")
 		if startIdx >= 0 && endIdx > startIdx && endIdx+2 < len(response) {
 			data := response[startIdx+1 : endIdx]
 			checksumStr := response[endIdx+1 : endIdx+3]
-
-			// Validate checksum
 			expectedChecksum := byte(0)
 			for i := 0; i < len(data); i++ {
 				expectedChecksum += data[i]
 			}
-
-			// Parse received checksum
 			var receivedChecksum byte
 			fmt.Sscanf(checksumStr, "%02x", &receivedChecksum)
 
 			if expectedChecksum == receivedChecksum {
-				// Send ACK
 				_, _ = q.conn.Write([]byte("+"))
 				return data, nil
 			} else {
-				// Send NACK
 				_, _ = q.conn.Write([]byte("-"))
 				return "", fmt.Errorf("checksum mismatch")
 			}
 		}
 	}
 
-	// If no packet format, just return the response (some responses are just OK, etc.)
 	response = strings.TrimSpace(response)
 	if response != "" {
 		_, _ = q.conn.Write([]byte("+"))
@@ -238,7 +218,6 @@ func (q *QemuDbg) GetRegs() (*Regs, error) {
 		return nil, err
 	}
 
-	// Clean response
 	resp = strings.TrimSpace(resp)
 
 	data, err := hex.DecodeString(resp)
@@ -344,14 +323,13 @@ func (q *QemuDbg) GetRip() (uint64, error) {
 }
 
 func (q *QemuDbg) SetRip(rip uint64) error {
-	return q.SetReg(16, rip) // RIP is register 16 in GDB protocol
+	return q.SetReg(16, rip)
 }
 
 func parseAddr(s string) (uint64, error) {
 	return strconv.ParseUint(s, 0, 64)
 }
 
-// RunQemuDebugger connects to QEMU and starts an interactive debugging session
 func RunQemuDebugger(host string, port int) error {
 	dbg, err := Connect(host, port)
 	if err != nil {
@@ -361,4 +339,26 @@ func RunQemuDebugger(host string, port int) error {
 
 	dbg.Interactive()
 	return nil
+}
+
+func (q *QemuDbg) DisassOne(addr uintptr) (*string, error) {
+	code, err := q.GetMemory(16, addr)
+	if err != nil {
+		return nil, err
+	}
+
+	result := fmt.Sprintf("%02x %02x %02x %02x", code[0], code[1], code[2], code[3])
+	return &result, nil
+}
+
+func (q *QemuDbg) GetProcMaps() []interface{} {
+	return []interface{}{}
+}
+
+func (q *QemuDbg) IsActive() bool {
+	return q.conn != nil && q.isStart
+}
+
+func (q *QemuDbg) ResolveAddrToSymbol(addr uint64) (interface{}, uint64, error) {
+	return nil, 0, fmt.Errorf("symbol resolution not available for QEMU remote debugging")
 }

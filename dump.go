@@ -296,8 +296,6 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 	for i := 0; i < len(code); i += 8 {
 		if i+8 <= len(code) {
 			address := binary.LittleEndian.Uint64(code[i : i+8])
-
-			// Get symbol info without expensive recursion to avoid hanging
 			var addrInfo string
 			sym, off, err := dbger.ResolveAddrToSymbol(address)
 			color := dbger.addr2color(address)
@@ -327,8 +325,6 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 
 	return nil
 }
-
-// heap
 
 const tcacheMaxBins = 64
 
