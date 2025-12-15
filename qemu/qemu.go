@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type QemuDbg struct {
@@ -44,6 +45,10 @@ func Connect(host string, port int) (*QemuDbg, error) {
 
 func (q *QemuDbg) Close() error {
 	if q.conn != nil {
+		// Send detach packet to properly disconnect from QEMU
+		// This allows QEMU to continue running normally
+		q.sendPacket("D")
+		// Don't wait for response, just close
 		return q.conn.Close()
 	}
 	return nil
@@ -55,11 +60,47 @@ func (q *QemuDbg) sendPacket(data string) error {
 		checksum += data[i]
 	}
 	packet := fmt.Sprintf("$%s#%02x", data, checksum)
-	_, err := q.conn.Write([]byte(packet))
-	return err
+
+	// Retry up to 3 times if we get a NACK
+	for retry := 0; retry < 3; retry++ {
+		_, err := q.conn.Write([]byte(packet))
+		if err != nil {
+			return err
+		}
+
+		// Wait for acknowledgment with timeout
+		q.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		ackBuf := make([]byte, 1)
+		n, err := q.conn.Read(ackBuf)
+		q.conn.SetReadDeadline(time.Time{}) // Clear deadline
+
+		if err != nil {
+			// On timeout or error, retry
+			if retry < 2 {
+				continue
+			}
+			return fmt.Errorf("failed to read ack: %v", err)
+		}
+
+		if n > 0 && ackBuf[0] == '+' {
+			return nil // Success
+		} else if n > 0 && ackBuf[0] == '-' {
+			// NACK received, retry
+			continue
+		}
+		// If we got something else, try to handle it as part of response
+		// This can happen with packets that don't expect ack
+		return nil
+	}
+
+	return fmt.Errorf("failed to send packet after 3 retries")
 }
 
 func (q *QemuDbg) recvPacket() (string, error) {
+	// Set read timeout to prevent infinite blocking
+	q.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer q.conn.SetReadDeadline(time.Time{}) // Clear deadline when done
+
 	buf := make([]byte, 8192)
 	n, err := q.conn.Read(buf)
 	if err != nil {
@@ -68,18 +109,45 @@ func (q *QemuDbg) recvPacket() (string, error) {
 
 	response := string(buf[:n])
 
-	q.conn.Write([]byte("+"))
+	// Handle ack/nack at beginning
+	response = strings.TrimPrefix(response, "+")
+	response = strings.TrimPrefix(response, "-")
 
+	// Parse packet format: $<data>#<checksum>
 	if strings.Contains(response, "$") && strings.Contains(response, "#") {
 		startIdx := strings.Index(response, "$")
 		endIdx := strings.Index(response, "#")
-		if startIdx >= 0 && endIdx > startIdx {
-			return response[startIdx+1 : endIdx], nil
+		if startIdx >= 0 && endIdx > startIdx && endIdx+2 < len(response) {
+			data := response[startIdx+1 : endIdx]
+			checksumStr := response[endIdx+1 : endIdx+3]
+
+			// Validate checksum
+			expectedChecksum := byte(0)
+			for i := 0; i < len(data); i++ {
+				expectedChecksum += data[i]
+			}
+
+			// Parse received checksum
+			var receivedChecksum byte
+			fmt.Sscanf(checksumStr, "%02x", &receivedChecksum)
+
+			if expectedChecksum == receivedChecksum {
+				// Send ACK
+				_, _ = q.conn.Write([]byte("+"))
+				return data, nil
+			} else {
+				// Send NACK
+				_, _ = q.conn.Write([]byte("-"))
+				return "", fmt.Errorf("checksum mismatch")
+			}
 		}
 	}
 
-	response = strings.TrimPrefix(response, "+")
+	// If no packet format, just return the response (some responses are just OK, etc.)
 	response = strings.TrimSpace(response)
+	if response != "" {
+		_, _ = q.conn.Write([]byte("+"))
+	}
 
 	return response, nil
 }
@@ -281,4 +349,16 @@ func (q *QemuDbg) SetRip(rip uint64) error {
 
 func parseAddr(s string) (uint64, error) {
 	return strconv.ParseUint(s, 0, 64)
+}
+
+// RunQemuDebugger connects to QEMU and starts an interactive debugging session
+func RunQemuDebugger(host string, port int) error {
+	dbg, err := Connect(host, port)
+	if err != nil {
+		return fmt.Errorf("failed to connect to QEMU: %v", err)
+	}
+	defer dbg.Close()
+
+	dbg.Interactive()
+	return nil
 }
