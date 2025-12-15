@@ -767,6 +767,15 @@ func (dbger *TypeDbg) loadSymbolsFromFile(filename string, libIndex int) error {
 		return err
 	}
 	defer file.Close()
+
+	if err := dbger.loadSymbolSection(file, ".symtab", ".strtab", libIndex); err != nil {
+		// Printf("failed to load static symbols from %s: %v\n", filename, err)
+	}
+
+	if err := dbger.loadSymbolSection(file, ".dynsym", ".dynstr", libIndex); err != nil {
+		// Printf("failed to load dynamic symbols from %s: %v\n", filename, err)
+	}
+
 	return nil
 }
 

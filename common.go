@@ -21,7 +21,7 @@ func EvaluateExpression(expr string, resolver SymbolResolver) (uint64, error) {
 }
 
 func resolveSymbolsInExpr(expr string, resolver SymbolResolver) (string, error) {
-	symPattern := regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_@.+-]*)`)
+	symPattern := regexp.MustCompile(`\$([a-zA-Z_][a-zA-Z0-9_@.]*)`)
 
 	var resolveErr error
 	result := symPattern.ReplaceAllStringFunc(expr, func(match string) string {
@@ -208,13 +208,19 @@ func parseNumber(s string) (uint64, error) {
 }
 
 func ResolveSymbolsInCommand(cmd string, resolver SymbolResolver) (string, error) {
-	exprPattern := regexp.MustCompile(`(\$[a-zA-Z_][a-zA-Z0-9_@.+-]*(?:\s*[+\-*/]\s*(?:0[xX][0-9a-fA-F]+|0[0-7]+|[0-9]+|\$[a-zA-Z_][a-zA-Z0-9_@.+-]*))*)`)
+	if !strings.Contains(cmd, "$") {
+		return cmd, nil
+	}
 
+	exprPattern := regexp.MustCompile(`(\$[a-zA-Z_][a-zA-Z0-9_@.]*(?:\s*[+\-*/]\s*(?:0[xX][0-9a-fA-F]+|0[0-7]+|[0-9]+|\$[a-zA-Z_][a-zA-Z0-9_@.]*))*)`)
+
+	var lastErr error
 	result := exprPattern.ReplaceAllStringFunc(cmd, func(match string) string {
 		val, err := EvaluateExpression(match, resolver)
 		if err != nil {
 			resolved, err2 := resolveSymbolsInExpr(match, resolver)
 			if err2 != nil {
+				lastErr = err2
 				return match
 			}
 			return resolved
@@ -222,5 +228,5 @@ func ResolveSymbolsInCommand(cmd string, resolver SymbolResolver) (string, error
 		return fmt.Sprintf("0x%x", val)
 	})
 
-	return result, nil
+	return result, lastErr
 }

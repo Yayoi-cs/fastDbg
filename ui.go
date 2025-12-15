@@ -13,7 +13,9 @@ func (dbger *TypeDbg) resolveSymbols(cmd string) (string, error) {
 }
 
 func (dbger *TypeDbg) Interactive(doContext bool) {
-	dbger.LoadSymbolsFromELF()
+	if err := dbger.LoadSymbolsFromELF(); err != nil {
+		LogError("Failed to load symbols: %v", err)
+	}
 
 	if dbger.isStart && dbger.isProcessAlive() {
 		if err := dbger.Reload(); err != nil {
@@ -74,7 +76,12 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 
 		resolvedReq := req
 		if strings.Contains(req, "$") {
-			resolvedReq, _ = dbger.resolveSymbols(req)
+			var resolveErr error
+			resolvedReq, resolveErr = dbger.resolveSymbols(req)
+			if resolveErr != nil {
+				LogError("Failed to resolve symbols in command: %v", resolveErr)
+				LogError("Attempting to execute command anyway...")
+			}
 		}
 
 		err = dbger.cmdExec(resolvedReq)
