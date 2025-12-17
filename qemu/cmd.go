@@ -9,9 +9,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -688,6 +690,21 @@ func (q *QemuDbg) resolveSymbols(cmd string) (string, error) {
 }
 
 func (q *QemuDbg) Interactive() {
+	// Set up signal handler for Ctrl+C
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+	defer signal.Stop(sigChan)
+
+	// Handle SIGINT in background - interrupt running QEMU target
+	go func() {
+		for range sigChan {
+			Printf("\n^C - Interrupting QEMU target...\n")
+			if err := q.Interrupt(); err != nil {
+				LogError("Failed to interrupt QEMU target: %v", err)
+			}
+		}
+	}()
+
 	prev := ""
 
 	rl, err := readline.NewEx(&readline.Config{
@@ -723,7 +740,17 @@ func (q *QemuDbg) Interactive() {
 
 		req, err := rl.Readline()
 		if err != nil {
-			if err == readline.ErrInterrupt || err == io.EOF {
+			if err == readline.ErrInterrupt {
+				if err := q.Interrupt(); err != nil {
+					LogError("Failed to interrupt QEMU target: %v", err)
+				} else {
+					if err := q.cmdContext(nil); err != nil {
+						LogError("Failed to get context: %v", err)
+					}
+				}
+				continue
+			}
+			if err == io.EOF {
 				break
 			}
 			continue

@@ -228,22 +228,61 @@ func (dbger *TypeDbg) cmdContinue(a interface{}) error {
 		return errors.New("debuggee has not started")
 	}
 
+	select {
+	case <-interruptFlag:
+	default:
+	}
+
 	err := dbger.Continue()
 	if err != nil {
 		return err
 	}
 
-	ws, err := dbger.wait()
-	if err != nil {
-		return err
+	type waitResult struct {
+		ws  unix.WaitStatus
+		err error
+	}
+	waitCh := make(chan waitResult, 1)
+
+	go func() {
+		ws, err := dbger.wait()
+		waitCh <- waitResult{ws, err}
+	}()
+
+	var ws unix.WaitStatus
+	interrupted := false
+
+	select {
+	case result := <-waitCh:
+		if result.err != nil {
+			return result.err
+		}
+		ws = result.ws
+		select {
+		case <-interruptFlag:
+			interrupted = true
+		default:
+		}
+	case <-interruptFlag:
+		interrupted = true
+		result := <-waitCh
+		if result.err != nil {
+			return result.err
+		}
+		ws = result.ws
 	}
 
-	if !ws.Exited() {
-		cls()
-		dbger.cmdContext(nil)
+	if ws.Exited() {
+		return nil
 	}
 
-	return err
+	cls()
+	dbger.cmdContext(nil)
+
+	if interrupted {
+	}
+
+	return nil
 }
 
 func (dbger *TypeDbg) cmdContext(a interface{}) error {

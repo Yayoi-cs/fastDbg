@@ -177,6 +177,23 @@ func (q *QemuDbg) Continue() error {
 	return q.sendPacket("c")
 }
 
+func (q *QemuDbg) Interrupt() error {
+	// Send Ctrl+C (0x03) to interrupt the running target
+	// This is the GDB remote protocol way to interrupt execution
+	_, err := q.conn.Write([]byte{0x03})
+	if err != nil {
+		return fmt.Errorf("failed to send interrupt: %v", err)
+	}
+
+	// Read the stop response
+	_, err = q.recvPacket()
+	if err != nil {
+		return fmt.Errorf("failed to receive interrupt response: %v", err)
+	}
+
+	return nil
+}
+
 func (q *QemuDbg) Step() error {
 	if err := q.sendPacket("s"); err != nil {
 		return err

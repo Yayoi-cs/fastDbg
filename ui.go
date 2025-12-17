@@ -5,12 +5,17 @@ import (
 	"fmt"
 	"github.com/chzyer/readline"
 	"io"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 )
 
 func (dbger *TypeDbg) resolveSymbols(cmd string) (string, error) {
 	return dbger.resolveSymbolsNew(cmd)
 }
+
+var interruptFlag = make(chan struct{}, 1)
 
 func (dbger *TypeDbg) Interactive(doContext bool) {
 	if err := dbger.LoadSymbolsFromELF(); err != nil {
@@ -23,15 +28,35 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 		}
 	}
 
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT)
+	defer signal.Stop(sigChan)
+
+	go func() {
+		for range sigChan {
+			if dbger.isStart && dbger.isProcessAlive() && !dbger.isStopped() {
+				if err := syscall.Kill(dbger.pid, syscall.SIGSTOP); err != nil {
+					LogError("Failed to send SIGSTOP to process: %v", err)
+					continue
+				}
+				select {
+				case interruptFlag <- struct{}{}:
+				default:
+				}
+			}
+		}
+	}()
+
 	prev := ""
 
 	rl, err := readline.NewEx(&readline.Config{
-		Prompt:              "[fastDbg]$ ",
-		HistoryFile:         "/tmp/fastdbg_history.txt",
-		InterruptPrompt:     "^C",
-		EOFPrompt:           "exit",
-		HistorySearchFold:   true,
-		FuncFilterInputRune: filterInput,
+		Prompt:                 "[fastDbg]$ ",
+		HistoryFile:            "/tmp/fastdbg_history.txt",
+		InterruptPrompt:        "",
+		EOFPrompt:              "exit",
+		HistorySearchFold:      true,
+		FuncFilterInputRune:    filterInput,
+		DisableAutoSaveHistory: false,
 	})
 	if err != nil {
 		panic(err)
@@ -55,7 +80,26 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 
 		req, err := rl.Readline()
 		if err != nil {
-			if err == readline.ErrInterrupt || err == io.EOF {
+			if err == readline.ErrInterrupt {
+				if dbger.isStart && dbger.isProcessAlive() {
+					if !dbger.isStopped() {
+						if err := dbger.interrupt(); err != nil {
+							LogError("Failed to interrupt process: %v", err)
+						} else {
+							if _, waitErr := dbger.wait(); waitErr != nil {
+								LogError("Failed to wait after interrupt: %v", waitErr)
+							} else {
+								if rip, ripErr := dbger.GetRip(); ripErr == nil {
+									dbger.rip = rip
+								}
+								dbger.cmdContext(nil)
+							}
+						}
+					}
+				}
+				continue
+			}
+			if err == io.EOF {
 				break
 			}
 			continue

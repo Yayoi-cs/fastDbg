@@ -305,11 +305,17 @@ func (dbger *TypeDbg) Detach() error {
 		return errors.New("invalid PID")
 	}
 
+	wasStopped := dbger.isStopped()
+
 	err := doSyscallErr(dbger.rpc, func() error {
 		return unix.PtraceDetach(dbger.pid)
 	})
 	if err != nil {
 		return err
+	}
+
+	if wasStopped {
+		unix.Kill(dbger.pid, unix.SIGCONT)
 	}
 
 	Printf("detached from PID:%d\n", dbger.pid)

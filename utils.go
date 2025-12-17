@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"golang.org/x/term"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -29,7 +30,20 @@ var colorArray []string = []string{
 }
 
 func LogError(msg string, a ...interface{}) {
-	fmt.Printf("%s[ERROR]%s %s\n", ColorRed, ColorReset, fmt.Sprintf(msg, a...))
+	// Get caller information
+	pc, _, _, ok := runtime.Caller(1)
+	callerName := "unknown"
+	if ok {
+		fn := runtime.FuncForPC(pc)
+		if fn != nil {
+			callerName = fn.Name()
+			// Extract just the function name (remove package path)
+			if idx := strings.LastIndex(callerName, "/"); idx != -1 {
+				callerName = callerName[idx+1:]
+			}
+		}
+	}
+	fmt.Printf("%s[ERROR]%s [%s] %s\n", ColorRed, ColorReset, callerName, fmt.Sprintf(msg, a...))
 }
 
 func Printf(msg string, a ...interface{}) {
