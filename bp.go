@@ -16,7 +16,6 @@ type TypeBp struct {
 var Bps []TypeBp
 
 func (dbger *TypeDbg) NewBp(bpAddr uintptr, pid int) (*TypeBp, error) {
-	tmpBps = append(tmpBps, bpAddr)
 	bp := &TypeBp{
 		pid:   pid,
 		addr:  bpAddr,
@@ -69,9 +68,19 @@ func (bp *TypeBp) enableBp(dbger *TypeDbg) error {
 	var err error
 
 	err = doSyscallErr(dbger.rpc, func() error {
-		_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
-		if err != nil {
-			return err
+		allZero := true
+		for _, b := range bp.instr {
+			if b != 0 {
+				allZero = false
+				break
+			}
+		}
+
+		if allZero {
+			_, err := unix.PtracePeekData(bp.pid, bp.addr, bp.instr)
+			if err != nil {
+				return err
+			}
 		}
 
 		origInstr = binary.LittleEndian.Uint64(bp.instr)
@@ -79,7 +88,7 @@ func (bp *TypeBp) enableBp(dbger *TypeDbg) error {
 		int3InstrLittle := make([]byte, 8)
 		binary.LittleEndian.PutUint64(int3InstrLittle, int3Instr)
 
-		_, err = unix.PtracePokeData(bp.pid, bp.addr, int3InstrLittle)
+		_, err := unix.PtracePokeData(bp.pid, bp.addr, int3InstrLittle)
 		return err
 	})
 
@@ -102,19 +111,7 @@ func (bp *TypeBp) disableBp(dbger *TypeDbg) error {
 	var err error
 
 	err = doSyscallErr(dbger.rpc, func() error {
-		int3InstrLittle := make([]byte, 8)
-		_, err := unix.PtracePeekData(bp.pid, bp.addr, int3InstrLittle)
-		if err != nil {
-			return err
-		}
-
-		int3Instr := binary.LittleEndian.Uint64(int3InstrLittle)
-		origInstr := binary.LittleEndian.Uint64(bp.instr)
-		newInstr := (int3Instr & ^uint64(0xff)) | (origInstr & 0xff)
-		binInstr := make([]byte, 8)
-		binary.LittleEndian.PutUint64(binInstr, newInstr)
-
-		_, err = unix.PtracePokeData(bp.pid, bp.addr, binInstr)
+		_, err = unix.PtracePokeData(bp.pid, bp.addr, bp.instr)
 		return err
 	})
 

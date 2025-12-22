@@ -18,6 +18,7 @@ type cmdHandler struct {
 }
 
 var compiledCmds = []cmdHandler{
+	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(l|list|L|LIST)\s*$`), (*TypeDbg).cmdBreakList},
 	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdBreak},
 	{regexp.MustCompile(`^\s*(b|break|B|BREAK)\s+(pie|PIE)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdBreakPie},
 	{regexp.MustCompile(`^\s*(enable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdEnable},
@@ -98,24 +99,25 @@ func (dbger *TypeDbg) cmdBreakPie(a interface{}) error {
 	if !ok {
 		return errors.New("invalid arguments")
 	}
-	addr, err := strconv.ParseUint(args[3], 0, 64)
+	offset, err := strconv.ParseUint(args[3], 0, 64)
 	if err != nil {
 		return err
 	}
 
-	addr = addr + libRoots[0].base
-
 	if !dbger.isStart {
-		tmpPieBps = append(tmpPieBps, uintptr(addr))
-		fmt.Printf("booked breakpoint %s%d%s @ %s0x%016x%s\n", ColorCyan, len(tmpBps), ColorReset, ColorCyan, addr, ColorReset)
+		// Store only the offset, not the absolute address
+		tmpPieBps = append(tmpPieBps, uintptr(offset))
+		fmt.Printf("booked PIE breakpoint %s%d%s @ offset %s0x%016x%s\n", ColorCyan, len(tmpPieBps), ColorReset, ColorCyan, offset, ColorReset)
 		return nil
 	}
 
-	_, err = dbger.NewBp(uintptr(addr), dbger.pid)
+	// When process is running, calculate absolute address
+	absAddr := offset + libRoots[0].base
+	_, err = dbger.NewBp(uintptr(absAddr), dbger.pid)
 	if err != nil {
 		return err
 	} else {
-		fmt.Printf("new breakpoint at %s0x%016x%s\n", ColorCyan, addr, ColorReset)
+		fmt.Printf("new breakpoint at %s0x%016x%s (PIE base + 0x%x)\n", ColorCyan, absAddr, ColorReset, offset)
 		return nil
 	}
 }
@@ -146,6 +148,64 @@ func (dbger *TypeDbg) cmdDisable(a interface{}) error {
 
 	err = dbger.DisableBp(int(off))
 	return err
+}
+
+func (dbger *TypeDbg) cmdBreakList(_ interface{}) error {
+	if len(Bps) == 0 && len(tmpBps) == 0 && len(tmpPieBps) == 0 {
+		fmt.Printf("No breakpoints set.\n")
+		return nil
+	}
+
+	if len(tmpBps) > 0 || len(tmpPieBps) > 0 {
+		hLine("booked breakpoints (will be set on start)")
+		for i, addr := range tmpBps {
+			fmt.Printf("[booked %d] %s0x%016x%s (absolute)\n", i, ColorCyan, addr, ColorReset)
+		}
+		for i, addr := range tmpPieBps {
+			fmt.Printf("[booked %d] %s0x%016x%s (PIE relative)\n", i+len(tmpBps), ColorCyan, addr, ColorReset)
+		}
+	}
+
+	if len(Bps) > 0 {
+		if len(tmpBps) > 0 || len(tmpPieBps) > 0 {
+			hLine("active breakpoints")
+		}
+		for i, bp := range Bps {
+			status := "enabled"
+			statusColor := ColorCyan
+			if !bp.isEnable {
+				status = "disabled"
+				statusColor = ColorRed
+			}
+
+			disasm := ""
+			if dbger.isStart && dbger.isProcessAlive() {
+				disasmStr, err := dbger.DisassOne(bp.addr)
+				if err == nil && disasmStr != nil {
+					disasm = fmt.Sprintf(" -> %s", *disasmStr)
+				}
+			}
+
+			symbol := ""
+			if dbger.isStart {
+				sym, offset, err := dbger.ResolveAddrToSymbol(uint64(bp.addr))
+				if err == nil && sym != nil {
+					if offset == 0 {
+						symbol = fmt.Sprintf(" <%s>", sym.Name)
+					} else {
+						symbol = fmt.Sprintf(" <%s+%d>", sym.Name, offset)
+					}
+				}
+			}
+
+			fmt.Printf("[%d] %s0x%016x%s %s%s%s%s%s\n",
+				i, ColorCyan, bp.addr, ColorReset,
+				statusColor, status, ColorReset,
+				symbol, disasm)
+		}
+	}
+
+	return nil
 }
 
 func (dbger *TypeDbg) cmdPrint(a interface{}) error {
@@ -191,6 +251,26 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 		return errors.New("invalid arguments")
 	}
 
+	var savedPieBps []uintptr
+	if dbger.isStart && dbger.pid > 0 {
+		if len(libRoots) > 0 && libRoots[0].base != 0 {
+			for _, bp := range Bps {
+				offset := uintptr(bp.addr) - uintptr(libRoots[0].base)
+				savedPieBps = append(savedPieBps, offset)
+			}
+		}
+
+		Printf("Killing previous process (PID:%d)...\n", dbger.pid)
+		err := dbger.Kill()
+		if err != nil {
+			return fmt.Errorf("failed to kill previous process: %v", err)
+		}
+
+		tmpBps = []uintptr{}
+	}
+
+	Bps = []TypeBp{}
+
 	tmpDbger, err := Run(dbger.path, args[2:]...)
 	if err != nil {
 		return err
@@ -198,6 +278,12 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 	mainDbger = *tmpDbger
 
 	dbger.Reload()
+
+	err = dbger.loadBase()
+	if err != nil {
+		return fmt.Errorf("failed to reload base: %v", err)
+	}
+
 	ebpf.NewTrace(dbger.pid)
 
 	for _, addr := range tmpBps {
@@ -207,10 +293,19 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 		}
 	}
 
-	for _, addr := range tmpPieBps {
-		_, err = dbger.NewBp(addr+uintptr(libRoots[0].base), dbger.pid)
-		if err != nil {
-			return err
+	if len(libRoots) > 0 {
+		for _, offset := range tmpPieBps {
+			_, err = dbger.NewBp(uintptr(libRoots[0].base)+offset, dbger.pid)
+			if err != nil {
+				return err
+			}
+		}
+
+		for _, offset := range savedPieBps {
+			_, err = dbger.NewBp(uintptr(libRoots[0].base)+offset, dbger.pid)
+			if err != nil {
+				return err
+			}
 		}
 	}
 

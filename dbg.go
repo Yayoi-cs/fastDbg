@@ -392,7 +392,7 @@ func (dbger *TypeDbg) Continue() error {
 
 	bp, ok := func(rip uint64) (*TypeBp, bool) {
 		for _, b := range Bps {
-			if b.addr == uintptr(rip-1) && b.isEnable {
+			if b.addr == uintptr(rip) && b.isEnable {
 				return &b, true
 			}
 		}
@@ -403,7 +403,7 @@ func (dbger *TypeDbg) Continue() error {
 		if err := bp.disableBp(dbger); err != nil {
 			return err
 		}
-		if err := dbger.SetRip(rip - 1); err != nil {
+		if err := dbger.SetRip(rip); err != nil {
 			return err
 		}
 		err = doSyscallErr(dbger.rpc, func() error {
@@ -445,7 +445,7 @@ func (dbger *TypeDbg) Step() error {
 
 	bp, ok := func(rip uint64) (*TypeBp, bool) {
 		for _, b := range Bps {
-			if b.addr == uintptr(rip-1) && b.isEnable {
+			if b.addr == uintptr(rip) && b.isEnable {
 				return &b, true
 			}
 		}
@@ -456,7 +456,7 @@ func (dbger *TypeDbg) Step() error {
 		if err := bp.disableBp(dbger); err != nil {
 			return err
 		}
-		if err := dbger.SetRip(rip - 1); err != nil {
+		if err := dbger.SetRip(rip); err != nil {
 			return err
 		}
 		err = doSyscallErr(dbger.rpc, func() error {
@@ -508,4 +508,37 @@ func (dbger *TypeDbg) DisassOne(addr uintptr) (*string, error) {
 
 func (dbger *TypeDbg) IsActive() bool {
 	return dbger.isStart && dbger.isProcessAlive()
+}
+
+func (dbger *TypeDbg) Kill() error {
+	if dbger.pid <= 0 {
+		return nil
+	}
+
+	// Kill the process if it's still alive
+	if dbger.isProcessAlive() {
+		err := doSyscallErr(dbger.rpc, func() error {
+			return unix.Kill(dbger.pid, unix.SIGKILL)
+		})
+		if err != nil {
+			return fmt.Errorf("failed to kill process: %v", err)
+		}
+
+		// Wait for process to exit
+		doSyscallErr(dbger.rpc, func() error {
+			unix.Wait4(dbger.pid, nil, 0, nil)
+			return nil
+		})
+	}
+
+	// Close the RPC goroutine
+	if dbger.rpc != nil {
+		dbger.rpc.closeSyscall()
+		dbger.rpc = nil
+	}
+
+	dbger.isStart = false
+	dbger.pid = 0
+
+	return nil
 }
