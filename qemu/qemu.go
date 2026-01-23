@@ -379,3 +379,54 @@ func (q *QemuDbg) IsActive() bool {
 func (q *QemuDbg) ResolveAddrToSymbol(addr uint64) (interface{}, uint64, error) {
 	return nil, 0, fmt.Errorf("symbol resolution not available for QEMU remote debugging")
 }
+
+// GetCR3 reads the CR3 register from the full register blob returned by 'g' command
+// CR3 is typically included in the register dump at various offsets depending on QEMU version
+func (q *QemuDbg) GetCR3() (uint64, error) {
+	resp, err := q.readResponse("g")
+	if err != nil {
+		return 0, fmt.Errorf("failed to read registers: %v", err)
+	}
+
+	resp = strings.TrimSpace(resp)
+	data, err := hex.DecodeString(resp)
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode register blob: %v", err)
+	}
+
+	fmt.Printf("Register blob size: %d bytes\n", len(data))
+
+	// Try common offsets where CR3 might appear in QEMU's register dump
+	// The layout varies by QEMU version and configuration
+	// Typical offsets after: GPRs(128) + RIP(8) + EFLAGS(8) + Segments(24) + FPU regs...
+	possibleOffsets := []int{
+		// After segment registers (offset 168)
+		168, 176, 184, 192, 200, 208,
+		// After FPU registers (varies, try several)
+		248, 256, 264, 272, 280, 288, 296,
+		// After XMM registers
+		424, 432, 440, 448, 456, 464, 472, 480,
+	}
+
+	for _, offset := range possibleOffsets {
+		if offset+8 <= len(data) {
+			value := binary.LittleEndian.Uint64(data[offset : offset+8])
+			// Check if this looks like a valid CR3 (page-aligned, non-zero)
+			if value != 0 && value&0xFFF == 0 && value < 0x0001000000000000 {
+				fmt.Printf("Found CR3 at offset %d: 0x%016x\n", offset, value)
+				return value, nil
+			}
+		}
+	}
+
+	// Debug: print some candidate values
+	fmt.Println("Candidate values from register blob:")
+	for _, offset := range possibleOffsets {
+		if offset+8 <= len(data) {
+			value := binary.LittleEndian.Uint64(data[offset : offset+8])
+			fmt.Printf("  Offset %3d: 0x%016x (page-aligned: %v)\n", offset, value, value&0xFFF == 0)
+		}
+	}
+
+	return 0, fmt.Errorf("CR3 not found in register dump")
+}

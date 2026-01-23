@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,10 +37,12 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(tel|telescope)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdTelescope},
 	{regexp.MustCompile(`^\s*(stack|stk|STACK|STK)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdStack},
 	{regexp.MustCompile(`^\s*(bt|backtrace|BT|BACKTRACE)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*QemuDbg).cmdBacktrace},
+	{regexp.MustCompile(`^\s*(pagetable|pt|PAGETABLE|PT)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*QemuDbg).cmdPageTable},
 	{regexp.MustCompile(`^\s*(regs|registers)$`), (*QemuDbg).cmdRegs},
 	{regexp.MustCompile(`^\s*(c|continue|cont|C|CONTINUE|CONT)\s*$`), (*QemuDbg).cmdContinue},
 	{regexp.MustCompile(`^\s*(step|STEP)\s*$`), (*QemuDbg).cmdStep},
 	{regexp.MustCompile(`^\s*(context|CONTEXT)\s*$`), (*QemuDbg).cmdContext},
+	{regexp.MustCompile(`^\s*(kbase|KBASE)\s*$`), (*QemuDbg).cmdKbase},
 }
 
 func (q *QemuDbg) CmdExec(req string) error {
@@ -684,18 +687,182 @@ func hLineRaw() {
 	fmt.Println(strings.Repeat("-", 80))
 }
 
+func (q *QemuDbg) cmdPageTable(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+
+	vaddr, err := strconv.ParseUint(args[2], 0, 64)
+	if err != nil {
+		return err
+	}
+
+	cr3, err := q.GetCR3()
+	if err != nil {
+		return fmt.Errorf("failed to read CR3: %v", err)
+	}
+
+	pgdBasePhys := cr3 & 0x000FFFFFFFFFF000
+
+	fmt.Printf("%sPage Table Walk for Virtual Address: 0x%016x%s\n", ColorCyan, vaddr, ColorReset)
+	fmt.Printf("%sCR3 (Page Table Base): 0x%016x%s\n\n", ColorGreen, cr3, ColorReset)
+
+	pgdIdx := (vaddr >> 39) & 0x1FF // bits 47:39
+	pudIdx := (vaddr >> 30) & 0x1FF // bits 38:30
+	pmdIdx := (vaddr >> 21) & 0x1FF // bits 29:21
+	pteIdx := (vaddr >> 12) & 0x1FF // bits 20:12
+	offset := vaddr & 0xFFF         // bits 11:0
+
+	fmt.Printf("%sVirtual Address Breakdown:%s\n", ColorYellow, ColorReset)
+	fmt.Printf("  PGD Index: 0x%03x (%d)\n", pgdIdx, pgdIdx)
+	fmt.Printf("  PUD Index: 0x%03x (%d)\n", pudIdx, pudIdx)
+	fmt.Printf("  PMD Index: 0x%03x (%d)\n", pmdIdx, pmdIdx)
+	fmt.Printf("  PTE Index: 0x%03x (%d)\n", pteIdx, pteIdx)
+	fmt.Printf("  Offset:    0x%03x (%d)\n\n", offset, offset)
+
+	pgdEntryPhysAddr := pgdBasePhys + (pgdIdx * 8)
+	pgdEntryData, err := q.GetMemory(8, uintptr(pgdEntryPhysAddr))
+	if err != nil {
+		return fmt.Errorf("failed to read PGD entry at physical address 0x%x: %v", pgdEntryPhysAddr, err)
+	}
+	pgdEntry := binary.LittleEndian.Uint64(pgdEntryData)
+
+	fmt.Printf("%s[PGD/PML4] Physical Address: 0x%016x%s\n", ColorBlue, pgdEntryPhysAddr, ColorReset)
+	fmt.Printf("  Entry Value: %s0x%016x%s\n", ColorCyan, pgdEntry, ColorReset)
+	q.printPageEntryFlags(pgdEntry)
+
+	if (pgdEntry & 0x1) == 0 {
+		return fmt.Errorf("%sPage not present at PGD level%s", ColorRed, ColorReset)
+	}
+
+	pudBasePhys := pgdEntry & 0x000FFFFFFFFFF000
+	pudEntryPhysAddr := pudBasePhys + (pudIdx * 8)
+	pudEntryData, err := q.GetMemory(8, uintptr(pudEntryPhysAddr))
+	if err != nil {
+		return fmt.Errorf("failed to read PUD entry at physical address 0x%x: %v", pudEntryPhysAddr, err)
+	}
+	pudEntry := binary.LittleEndian.Uint64(pudEntryData)
+
+	fmt.Printf("\n%s[PUD/PDP] Physical Address: 0x%016x%s\n", ColorBlue, pudEntryPhysAddr, ColorReset)
+	fmt.Printf("  Entry Value: %s0x%016x%s\n", ColorCyan, pudEntry, ColorReset)
+	q.printPageEntryFlags(pudEntry)
+
+	if (pudEntry & 0x1) == 0 {
+		return fmt.Errorf("%sPage not present at PUD level%s", ColorRed, ColorReset)
+	}
+
+	if (pudEntry & 0x80) != 0 {
+		pageFrame := pudEntry & 0x000FFFFFC0000000
+		physAddr := pageFrame + (vaddr & 0x3FFFFFFF)
+		fmt.Printf("\n%s1GB Huge Page detected!%s\n", ColorGreen, ColorReset)
+		fmt.Printf("%sPhysical Address: 0x%016x%s\n", ColorGreen, physAddr, ColorReset)
+		return nil
+	}
+
+	pmdBasePhys := pudEntry & 0x000FFFFFFFFFF000
+	pmdEntryPhysAddr := pmdBasePhys + (pmdIdx * 8)
+	pmdEntryData, err := q.GetMemory(8, uintptr(pmdEntryPhysAddr))
+	if err != nil {
+		return fmt.Errorf("failed to read PMD entry at physical address 0x%x: %v", pmdEntryPhysAddr, err)
+	}
+	pmdEntry := binary.LittleEndian.Uint64(pmdEntryData)
+
+	fmt.Printf("\n%s[PMD/PD] Physical Address: 0x%016x%s\n", ColorBlue, pmdEntryPhysAddr, ColorReset)
+	fmt.Printf("  Entry Value: %s0x%016x%s\n", ColorCyan, pmdEntry, ColorReset)
+	q.printPageEntryFlags(pmdEntry)
+
+	if (pmdEntry & 0x1) == 0 {
+		return fmt.Errorf("%sPage not present at PMD level%s", ColorRed, ColorReset)
+	}
+
+	if (pmdEntry & 0x80) != 0 {
+		pageFrame := pmdEntry & 0x000FFFFFFFE00000
+		physAddr := pageFrame + (vaddr & 0x1FFFFF)
+		fmt.Printf("\n%s2MB Huge Page detected!%s\n", ColorGreen, ColorReset)
+		fmt.Printf("%sPhysical Address: 0x%016x%s\n", ColorGreen, physAddr, ColorReset)
+		return nil
+	}
+
+	pteBasePhys := pmdEntry & 0x000FFFFFFFFFF000
+	pteEntryPhysAddr := pteBasePhys + (pteIdx * 8)
+	pteEntryData, err := q.GetMemory(8, uintptr(pteEntryPhysAddr))
+	if err != nil {
+		return fmt.Errorf("failed to read PTE entry at physical address 0x%x: %v", pteEntryPhysAddr, err)
+	}
+	pteEntry := binary.LittleEndian.Uint64(pteEntryData)
+
+	fmt.Printf("\n%s[PTE/PT] Physical Address: 0x%016x%s\n", ColorBlue, pteEntryPhysAddr, ColorReset)
+	fmt.Printf("  Entry Value: %s0x%016x%s\n", ColorCyan, pteEntry, ColorReset)
+	q.printPageEntryFlags(pteEntry)
+
+	if (pteEntry & 0x1) == 0 {
+		return fmt.Errorf("%sPage not present at PTE level%s", ColorRed, ColorReset)
+	}
+
+	pageFrame := pteEntry & 0x000FFFFFFFFFF000
+	physAddr := pageFrame + offset
+
+	fmt.Printf("\n%s[Result]%s\n", ColorGreen, ColorReset)
+	fmt.Printf("  Page Frame: %s0x%016x%s\n", ColorCyan, pageFrame, ColorReset)
+	fmt.Printf("  Physical Address: %s0x%016x%s\n", ColorGreen, physAddr, ColorReset)
+
+	return nil
+}
+
+func (q *QemuDbg) printPageEntryFlags(entry uint64) {
+	flags := []string{}
+	if (entry & 0x1) != 0 {
+		flags = append(flags, "P")
+	}
+	if (entry & 0x2) != 0 {
+		flags = append(flags, "RW")
+	} else {
+		flags = append(flags, "RO")
+	}
+	if (entry & 0x4) != 0 {
+		flags = append(flags, "U")
+	} else {
+		flags = append(flags, "S")
+	}
+	if (entry & 0x8) != 0 {
+		flags = append(flags, "PWT")
+	}
+	if (entry & 0x10) != 0 {
+		flags = append(flags, "PCD")
+	}
+	if (entry & 0x20) != 0 {
+		flags = append(flags, "A")
+	}
+	if (entry & 0x40) != 0 {
+		flags = append(flags, "D")
+	}
+	if (entry & 0x80) != 0 {
+		flags = append(flags, "PS")
+	}
+	if (entry & 0x100) != 0 {
+		flags = append(flags, "G")
+	}
+	if (entry & 0x8000000000000000) != 0 {
+		flags = append(flags, "NX")
+	}
+
+	fmt.Printf("  Flags: %s[%s]%s\n", ColorYellow, strings.Join(flags, " | "), ColorReset)
+	fmt.Printf("    P=Present, RW=Read/Write, RO=Read-Only, U=User, S=Supervisor\n")
+	fmt.Printf("    PWT=WriteThrough, PCD=CacheDisable, A=Accessed, D=Dirty\n")
+	fmt.Printf("    PS=PageSize, G=Global, NX=NoExecute\n")
+}
+
 func (q *QemuDbg) resolveSymbols(cmd string) (string, error) {
 	resolver := NewQemuSymbolResolver(q)
 	return ResolveSymbolsInCommand(cmd, resolver)
 }
 
 func (q *QemuDbg) Interactive() {
-	// Set up signal handler for Ctrl+C
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT)
 	defer signal.Stop(sigChan)
 
-	// Handle SIGINT in background - interrupt running QEMU target
 	go func() {
 		for range sigChan {
 			Printf("\n^C - Interrupting QEMU target...\n")
@@ -779,4 +946,31 @@ func (q *QemuDbg) Interactive() {
 			LogError(err.Error())
 		}
 	}
+}
+
+func (q *QemuDbg) cmdKbase(_ interface{}) error {
+	rip, err := q.GetRip()
+	var kbase uint64 = 0
+
+	if err != nil {
+		return err
+	} else {
+		rip = rip & 0xffffffffffff0000
+	}
+
+	for i := rip; i > 0xffffffff81000000; i -= 0x1000 {
+		mem, err := q.GetMemory(8, uintptr(i))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(mem, []byte("elf")) {
+			kbase = i
+			break
+		}
+	}
+	if kbase == 0 {
+		return errors.New("kbase not found")
+	}
+	fmt.Printf("kbase = %s%016x%s", ColorCyan, kbase, ColorReset)
+	return nil
 }

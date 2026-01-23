@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/common-nighthawk/go-figure"
 	"os"
+	"path/filepath"
 )
 
 func main() {
@@ -50,7 +51,12 @@ func main() {
 	}
 
 	if *fn != "" {
-		mainDbger.path = *fn
+		absPath, err := filepath.Abs(*fn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error resolving path %s: %s\n", *fn, err)
+			os.Exit(1)
+		}
+		mainDbger.path = absPath
 		mainDbger.Interactive(false)
 	}
 

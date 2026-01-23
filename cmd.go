@@ -276,10 +276,11 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 		return err
 	}
 	mainDbger = *tmpDbger
-
-	dbger.Reload()
+	*dbger = mainDbger
 
 	err = dbger.loadBase()
+	dbger.Reload()
+
 	if err != nil {
 		return fmt.Errorf("failed to reload base: %v", err)
 	}
@@ -295,7 +296,9 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 
 	if len(libRoots) > 0 {
 		for _, offset := range tmpPieBps {
-			_, err = dbger.NewBp(uintptr(libRoots[0].base)+offset, dbger.pid)
+			absAddr := uintptr(libRoots[0].base) + offset
+			Printf("Setting PIE breakpoint: base=0x%x + offset=0x%x = 0x%x\n", libRoots[0].base, offset, absAddr)
+			_, err = dbger.NewBp(absAddr, dbger.pid)
 			if err != nil {
 				return err
 			}
