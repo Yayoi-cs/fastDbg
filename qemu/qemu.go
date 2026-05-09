@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,14 @@ type QemuDbg struct {
 	port    int
 	arch    int
 	isStart bool
+
+	regLayout *RegLayout
+
+	// rxBuf carries bytes read from the socket that haven't been consumed yet.
+	// TCP can deliver multiple GDB packets in a single read (e.g. an `O...`
+	// stream packet bundled with its trailing `OK`), so we keep a persistent
+	// buffer instead of discarding whatever recvPacket didn't return.
+	rxBuf []byte
 }
 
 func Connect(host string, port int) (*QemuDbg, error) {
@@ -40,7 +49,39 @@ func Connect(host string, port int) (*QemuDbg, error) {
 	}
 
 	fmt.Printf("Connected to QEMU GDB stub at %s\n", addr)
+
+	dbg.autoDetect()
+
 	return dbg, nil
+}
+
+// autoDetect probes the connected QEMU stub for capabilities. We negotiate
+// supported features (so QEMU emits the full target description with control
+// registers), then fetch target.xml and any included files to build a
+// register-name → (regnum, offset, size) map. This is what makes CR3 access
+// stable across QEMU versions instead of guessing offsets in the `g` blob.
+//
+// If the stub is too old to expose cr3 in target.xml (pre-QEMU 8.0), we just
+// log it; GetCR3 will fall back to parsing `monitor info registers`.
+func (q *QemuDbg) autoDetect() {
+	if _, err := q.readResponse("qSupported:multiprocess+;swbreak+;hwbreak+;xmlRegisters=i386"); err != nil {
+		fmt.Printf("warn: qSupported handshake failed: %v\n", err)
+	}
+
+	layout, err := q.loadRegLayout()
+	if err != nil {
+		fmt.Printf("warn: target description discovery failed (%v); CR3 will use monitor fallback\n", err)
+		return
+	}
+	q.regLayout = layout
+
+	if cr3, ok := layout.ByName["cr3"]; ok {
+		fmt.Printf("Auto-detected register layout: %d registers, cr3 at regnum=%d offset=%d\n",
+			len(layout.ByName), cr3.RegNum, cr3.Offset)
+	} else {
+		fmt.Printf("Auto-detected register layout: %d registers; cr3 not exposed by this QEMU (will use monitor fallback)\n",
+			len(layout.ByName))
+	}
 }
 
 func (q *QemuDbg) Close() error {
@@ -64,23 +105,36 @@ func (q *QemuDbg) sendPacket(data string) error {
 			return err
 		}
 
-		q.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		ackBuf := make([]byte, 1)
-		n, err := q.conn.Read(ackBuf)
-		q.conn.SetReadDeadline(time.Time{})
-
-		if err != nil {
-			if retry < 2 {
+		var ack byte
+		if len(q.rxBuf) > 0 {
+			ack = q.rxBuf[0]
+			q.rxBuf = q.rxBuf[1:]
+		} else {
+			q.conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			ackBuf := make([]byte, 1)
+			n, err := q.conn.Read(ackBuf)
+			q.conn.SetReadDeadline(time.Time{})
+			if err != nil {
+				if retry < 2 {
+					continue
+				}
+				return fmt.Errorf("failed to read ack: %v", err)
+			}
+			if n == 0 {
 				continue
 			}
-			return fmt.Errorf("failed to read ack: %v", err)
+			ack = ackBuf[0]
 		}
 
-		if n > 0 && ackBuf[0] == '+' {
+		if ack == '+' {
 			return nil
-		} else if n > 0 && ackBuf[0] == '-' {
+		}
+		if ack == '-' {
 			continue
 		}
+		// Not an ack byte (e.g. a `$` from a piggy-backed response packet);
+		// push it back so recvPacket can pick it up.
+		q.rxBuf = append([]byte{ack}, q.rxBuf...)
 		return nil
 	}
 
@@ -91,45 +145,46 @@ func (q *QemuDbg) recvPacket() (string, error) {
 	q.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	defer q.conn.SetReadDeadline(time.Time{})
 
-	buf := make([]byte, 8192)
-	n, err := q.conn.Read(buf)
-	if err != nil {
-		return "", err
-	}
+	tmp := make([]byte, 4096)
 
-	response := string(buf[:n])
+	for {
+		startIdx := bytes.IndexByte(q.rxBuf, '$')
+		if startIdx >= 0 {
+			hashIdx := bytes.IndexByte(q.rxBuf[startIdx+1:], '#')
+			if hashIdx >= 0 {
+				hashIdx += startIdx + 1
+				if hashIdx+2 < len(q.rxBuf) {
+					data := string(q.rxBuf[startIdx+1 : hashIdx])
+					checksumStr := string(q.rxBuf[hashIdx+1 : hashIdx+3])
 
-	response = strings.TrimPrefix(response, "+")
-	response = strings.TrimPrefix(response, "-")
-	if strings.Contains(response, "$") && strings.Contains(response, "#") {
-		startIdx := strings.Index(response, "$")
-		endIdx := strings.Index(response, "#")
-		if startIdx >= 0 && endIdx > startIdx && endIdx+2 < len(response) {
-			data := response[startIdx+1 : endIdx]
-			checksumStr := response[endIdx+1 : endIdx+3]
-			expectedChecksum := byte(0)
-			for i := 0; i < len(data); i++ {
-				expectedChecksum += data[i]
-			}
-			var receivedChecksum byte
-			fmt.Sscanf(checksumStr, "%02x", &receivedChecksum)
+					expected := byte(0)
+					for i := 0; i < len(data); i++ {
+						expected += data[i]
+					}
+					var received byte
+					fmt.Sscanf(checksumStr, "%02x", &received)
 
-			if expectedChecksum == receivedChecksum {
-				_, _ = q.conn.Write([]byte("+"))
-				return data, nil
-			} else {
-				_, _ = q.conn.Write([]byte("-"))
-				return "", fmt.Errorf("checksum mismatch")
+					q.rxBuf = q.rxBuf[hashIdx+3:]
+
+					if expected == received {
+						_, _ = q.conn.Write([]byte("+"))
+						return data, nil
+					}
+					_, _ = q.conn.Write([]byte("-"))
+					return "", fmt.Errorf("checksum mismatch")
+				}
 			}
 		}
-	}
 
-	response = strings.TrimSpace(response)
-	if response != "" {
-		_, _ = q.conn.Write([]byte("+"))
+		n, err := q.conn.Read(tmp)
+		if err != nil {
+			return "", err
+		}
+		if n == 0 {
+			continue
+		}
+		q.rxBuf = append(q.rxBuf, tmp[:n]...)
 	}
-
-	return response, nil
 }
 
 func (q *QemuDbg) readResponse(cmd string) (string, error) {
@@ -146,8 +201,11 @@ func (q *QemuDbg) GetMemory(size uint, addr uintptr) ([]byte, error) {
 		return nil, err
 	}
 
-	if resp == "E00" || resp == "" {
+	if resp == "" {
 		return nil, errors.New("failed to read memory")
+	}
+	if resp[0] == 'E' {
+		return nil, fmt.Errorf("memory read at 0x%x failed: %s", addr, resp)
 	}
 
 	data, err := hex.DecodeString(resp)
@@ -229,6 +287,13 @@ type Regs struct {
 	Gs     uint32
 }
 
+// GetRegs reads the full register blob (`g` packet) and slices out the GP /
+// segment registers. When the target description has been auto-detected at
+// connect time, byte offsets come from there — so the layout stays correct
+// across QEMU versions that reorder or insert registers. If no layout was
+// discovered (e.g. very old QEMU without qXfer:features support), we fall
+// back to the historical fixed offsets that match QEMU's traditional x86_64
+// `g` layout.
 func (q *QemuDbg) GetRegs() (*Regs, error) {
 	resp, err := q.readResponse("g")
 	if err != nil {
@@ -242,11 +307,40 @@ func (q *QemuDbg) GetRegs() (*Regs, error) {
 		return nil, fmt.Errorf("failed to decode registers: %v (response: %s)", err, resp[:min(len(resp), 50)])
 	}
 
+	regs := &Regs{}
+
+	if q.regLayout != nil {
+		regs.Rax = sliceReg64(data, q.regLayout, "rax")
+		regs.Rbx = sliceReg64(data, q.regLayout, "rbx")
+		regs.Rcx = sliceReg64(data, q.regLayout, "rcx")
+		regs.Rdx = sliceReg64(data, q.regLayout, "rdx")
+		regs.Rsi = sliceReg64(data, q.regLayout, "rsi")
+		regs.Rdi = sliceReg64(data, q.regLayout, "rdi")
+		regs.Rbp = sliceReg64(data, q.regLayout, "rbp")
+		regs.Rsp = sliceReg64(data, q.regLayout, "rsp")
+		regs.R8 = sliceReg64(data, q.regLayout, "r8")
+		regs.R9 = sliceReg64(data, q.regLayout, "r9")
+		regs.R10 = sliceReg64(data, q.regLayout, "r10")
+		regs.R11 = sliceReg64(data, q.regLayout, "r11")
+		regs.R12 = sliceReg64(data, q.regLayout, "r12")
+		regs.R13 = sliceReg64(data, q.regLayout, "r13")
+		regs.R14 = sliceReg64(data, q.regLayout, "r14")
+		regs.R15 = sliceReg64(data, q.regLayout, "r15")
+		regs.Rip = sliceReg64(data, q.regLayout, "rip")
+		regs.Eflags = sliceReg64(data, q.regLayout, "eflags")
+		regs.Cs = uint32(sliceReg64(data, q.regLayout, "cs"))
+		regs.Ss = uint32(sliceReg64(data, q.regLayout, "ss"))
+		regs.Ds = uint32(sliceReg64(data, q.regLayout, "ds"))
+		regs.Es = uint32(sliceReg64(data, q.regLayout, "es"))
+		regs.Fs = uint32(sliceReg64(data, q.regLayout, "fs"))
+		regs.Gs = uint32(sliceReg64(data, q.regLayout, "gs"))
+		return regs, nil
+	}
+
 	if len(data) < 8*17 {
 		return nil, fmt.Errorf("insufficient register data: got %d bytes, need at least %d", len(data), 8*17)
 	}
 
-	regs := &Regs{}
 	regs.Rax = binary.LittleEndian.Uint64(data[0:8])
 	regs.Rbx = binary.LittleEndian.Uint64(data[8:16])
 	regs.Rcx = binary.LittleEndian.Uint64(data[16:24])
@@ -276,6 +370,26 @@ func (q *QemuDbg) GetRegs() (*Regs, error) {
 	}
 
 	return regs, nil
+}
+
+// sliceReg64 reads a register's bytes out of the `g` blob using the discovered
+// layout, zero-padding to 8 bytes for sub-uint64 sizes (segment regs are 4).
+// Returns 0 if the register isn't in the layout or extends past the blob.
+func sliceReg64(blob []byte, layout *RegLayout, name string) uint64 {
+	info, ok := layout.ByName[name]
+	if !ok {
+		return 0
+	}
+	if info.Offset+info.ByteSize > len(blob) {
+		return 0
+	}
+	var buf [8]byte
+	n := info.ByteSize
+	if n > 8 {
+		n = 8
+	}
+	copy(buf[:], blob[info.Offset:info.Offset+n])
+	return binary.LittleEndian.Uint64(buf[:])
 }
 
 func min(a, b int) int {
@@ -340,7 +454,13 @@ func (q *QemuDbg) GetRip() (uint64, error) {
 }
 
 func (q *QemuDbg) SetRip(rip uint64) error {
-	return q.SetReg(16, rip)
+	regnum := 16
+	if q.regLayout != nil {
+		if info, ok := q.regLayout.ByName["rip"]; ok {
+			regnum = info.RegNum
+		}
+	}
+	return q.SetReg(regnum, rip)
 }
 
 func parseAddr(s string) (uint64, error) {
@@ -380,53 +500,19 @@ func (q *QemuDbg) ResolveAddrToSymbol(addr uint64) (interface{}, uint64, error) 
 	return nil, 0, fmt.Errorf("symbol resolution not available for QEMU remote debugging")
 }
 
-// GetCR3 reads the CR3 register from the full register blob returned by 'g' command
-// CR3 is typically included in the register dump at various offsets depending on QEMU version
+// GetCR3 returns the value of the CR3 control register.
+//
+// QEMU >= 8.0 declares cr3 in its GDB target description (i386-64bit.xml), so
+// we read it through the standard p<regnum> packet using the regnum we
+// discovered at connect time. For older builds where cr3 is absent from
+// target.xml, we fall back to parsing `monitor info registers` over qRcmd.
+// The previous heuristic that scanned the `g` blob for page-aligned values
+// has been retired — it was unreliable across QEMU versions and configurations.
 func (q *QemuDbg) GetCR3() (uint64, error) {
-	resp, err := q.readResponse("g")
-	if err != nil {
-		return 0, fmt.Errorf("failed to read registers: %v", err)
-	}
-
-	resp = strings.TrimSpace(resp)
-	data, err := hex.DecodeString(resp)
-	if err != nil {
-		return 0, fmt.Errorf("failed to decode register blob: %v", err)
-	}
-
-	fmt.Printf("Register blob size: %d bytes\n", len(data))
-
-	// Try common offsets where CR3 might appear in QEMU's register dump
-	// The layout varies by QEMU version and configuration
-	// Typical offsets after: GPRs(128) + RIP(8) + EFLAGS(8) + Segments(24) + FPU regs...
-	possibleOffsets := []int{
-		// After segment registers (offset 168)
-		168, 176, 184, 192, 200, 208,
-		// After FPU registers (varies, try several)
-		248, 256, 264, 272, 280, 288, 296,
-		// After XMM registers
-		424, 432, 440, 448, 456, 464, 472, 480,
-	}
-
-	for _, offset := range possibleOffsets {
-		if offset+8 <= len(data) {
-			value := binary.LittleEndian.Uint64(data[offset : offset+8])
-			// Check if this looks like a valid CR3 (page-aligned, non-zero)
-			if value != 0 && value&0xFFF == 0 && value < 0x0001000000000000 {
-				fmt.Printf("Found CR3 at offset %d: 0x%016x\n", offset, value)
-				return value, nil
-			}
+	if q.regLayout != nil {
+		if _, ok := q.regLayout.ByName["cr3"]; ok {
+			return q.GetRegisterByName("cr3")
 		}
 	}
-
-	// Debug: print some candidate values
-	fmt.Println("Candidate values from register blob:")
-	for _, offset := range possibleOffsets {
-		if offset+8 <= len(data) {
-			value := binary.LittleEndian.Uint64(data[offset : offset+8])
-			fmt.Printf("  Offset %3d: 0x%016x (page-aligned: %v)\n", offset, value, value&0xFFF == 0)
-		}
-	}
-
-	return 0, fmt.Errorf("CR3 not found in register dump")
+	return q.cr3FromMonitor()
 }

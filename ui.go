@@ -63,6 +63,16 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 	}
 	defer rl.Close()
 
+	defer func() {
+		if dbger.isStart && dbger.pid > 0 {
+			if dbger.isAttach {
+				dbger.Detach()
+			} else {
+				dbger.Kill()
+			}
+		}
+	}()
+
 	if doContext {
 		dbger.cmdContext(nil)
 	}
@@ -72,6 +82,7 @@ func (dbger *TypeDbg) Interactive(doContext bool) {
 			dbger.loadBase()
 			ebpf.MapFlag = false
 		}
+		dbger.loadBase()
 		if !dbger.isStart {
 			rl.SetPrompt("[fastDbg]$ ")
 		} else {

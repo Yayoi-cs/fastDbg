@@ -1,7 +1,6 @@
 package qemu
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -722,7 +721,7 @@ func (q *QemuDbg) cmdPageTable(a interface{}) error {
 	fmt.Printf("  Offset:    0x%03x (%d)\n\n", offset, offset)
 
 	pgdEntryPhysAddr := pgdBasePhys + (pgdIdx * 8)
-	pgdEntryData, err := q.GetMemory(8, uintptr(pgdEntryPhysAddr))
+	pgdEntryData, err := q.GetPhysMemory(8, uintptr(pgdEntryPhysAddr))
 	if err != nil {
 		return fmt.Errorf("failed to read PGD entry at physical address 0x%x: %v", pgdEntryPhysAddr, err)
 	}
@@ -738,7 +737,7 @@ func (q *QemuDbg) cmdPageTable(a interface{}) error {
 
 	pudBasePhys := pgdEntry & 0x000FFFFFFFFFF000
 	pudEntryPhysAddr := pudBasePhys + (pudIdx * 8)
-	pudEntryData, err := q.GetMemory(8, uintptr(pudEntryPhysAddr))
+	pudEntryData, err := q.GetPhysMemory(8, uintptr(pudEntryPhysAddr))
 	if err != nil {
 		return fmt.Errorf("failed to read PUD entry at physical address 0x%x: %v", pudEntryPhysAddr, err)
 	}
@@ -762,7 +761,7 @@ func (q *QemuDbg) cmdPageTable(a interface{}) error {
 
 	pmdBasePhys := pudEntry & 0x000FFFFFFFFFF000
 	pmdEntryPhysAddr := pmdBasePhys + (pmdIdx * 8)
-	pmdEntryData, err := q.GetMemory(8, uintptr(pmdEntryPhysAddr))
+	pmdEntryData, err := q.GetPhysMemory(8, uintptr(pmdEntryPhysAddr))
 	if err != nil {
 		return fmt.Errorf("failed to read PMD entry at physical address 0x%x: %v", pmdEntryPhysAddr, err)
 	}
@@ -786,7 +785,7 @@ func (q *QemuDbg) cmdPageTable(a interface{}) error {
 
 	pteBasePhys := pmdEntry & 0x000FFFFFFFFFF000
 	pteEntryPhysAddr := pteBasePhys + (pteIdx * 8)
-	pteEntryData, err := q.GetMemory(8, uintptr(pteEntryPhysAddr))
+	pteEntryData, err := q.GetPhysMemory(8, uintptr(pteEntryPhysAddr))
 	if err != nil {
 		return fmt.Errorf("failed to read PTE entry at physical address 0x%x: %v", pteEntryPhysAddr, err)
 	}
@@ -949,28 +948,32 @@ func (q *QemuDbg) Interactive() {
 }
 
 func (q *QemuDbg) cmdKbase(_ interface{}) error {
-	rip, err := q.GetRip()
-	var kbase uint64 = 0
+	// Linux x86_64 KASLR places the kernel image at a 2MB-aligned address inside
+	// the kernel-text region [0xffffffff80000000, 0xffffffff9fffffff]. That's
+	// exactly 256 candidate positions. We probe each from the top down; the
+	// lowest 2MB-aligned address that responds to a memory read is the kernel
+	// base. RIP is intentionally NOT used as a starting point — it's often in
+	// module space (≥0xffffffffa0000000) where walking downward crosses
+	// unmapped gaps before reaching the kernel image.
+	const (
+		kernelTextStart uint64 = 0xffffffff80000000
+		kernelTextEnd   uint64 = 0xffffffff9fffffff
+		align2MB        uint64 = 0x200000
+	)
 
-	if err != nil {
-		return err
-	} else {
-		rip = rip & 0xffffffffffff0000
-	}
-
-	for i := rip; i > 0xffffffff81000000; i -= 0x1000 {
-		mem, err := q.GetMemory(8, uintptr(i))
-		if err != nil {
-			continue
+	var kbase uint64
+	for addr := kernelTextEnd & ^(align2MB - 1); ; addr -= align2MB {
+		if _, err := q.GetMemory(1, uintptr(addr)); err == nil {
+			kbase = addr
 		}
-		if bytes.Contains(mem, []byte("elf")) {
-			kbase = i
+		if addr <= kernelTextStart {
 			break
 		}
 	}
+
 	if kbase == 0 {
-		return errors.New("kbase not found")
+		return errors.New("kbase not found in kernel text range")
 	}
-	fmt.Printf("kbase = %s%016x%s", ColorCyan, kbase, ColorReset)
+	fmt.Printf("kbase = %s0x%016x%s\n", ColorCyan, kbase, ColorReset)
 	return nil
 }

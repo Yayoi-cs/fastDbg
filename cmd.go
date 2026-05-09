@@ -42,6 +42,8 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(sym|symbol|SYM|SYMBOL)(\s+\w+)*\s*$`), (*TypeDbg).cmdSym},
 	{regexp.MustCompile(`^\s*(got|GOT)\s*$`), (*TypeDbg).cmdGot},
 	{regexp.MustCompile(`^\s*(bins|BINS)\s*$`), (*TypeDbg).cmdBins},
+	{regexp.MustCompile(`^\s*(arena|arenas|ARENA|ARENAS)\s*$`), (*TypeDbg).cmdArena},
+	{regexp.MustCompile(`^\s*(chunk|CHUNK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdChunk},
 	{regexp.MustCompile(`^\s*(fs|fs_base)\s*$`), (*TypeDbg).cmdFs},
 	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
 	{regexp.MustCompile(`^\s*(set32)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
@@ -270,6 +272,7 @@ func (dbger *TypeDbg) cmdStart(a interface{}) error {
 	}
 
 	Bps = []TypeBp{}
+	invalidateLibcCache()
 
 	tmpDbger, err := Run(dbger.path, args[2:]...)
 	if err != nil {
