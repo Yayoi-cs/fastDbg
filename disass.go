@@ -19,23 +19,40 @@ uint16_t get_size(cs_insn* insn) { return insn->size; }
 */
 import "C"
 
-func (dbger *TypeDbg) disass(addr uint64, sz uint) {
+// disass prints `n` instructions starting at addr. n is a count of
+// instructions (lines), not a byte size. Use disass2ret to walk until a
+// `ret` instruction.
+func (dbger *TypeDbg) disass(addr uint64, n uint) {
+	if n == 0 {
+		n = 16
+	}
+
+	// x86_64 instructions are at most 15 bytes; over-read so capstone has
+	// enough material to satisfy `n` even for large encodings. Cap to keep
+	// the request bounded.
+	bytesNeeded := n * 15
+	if bytesNeeded > 4096 {
+		bytesNeeded = 4096
+	}
+
 	code, ok := func() ([]byte, bool) {
 		for _, b := range Bps {
 			if uint64(b.addr) == addr && b.isEnable {
-				code, _ := dbger.GetMemory(sz, uintptr(addr))
-				copy(code, b.instr)
-				return code, true
+				buf, err := dbger.GetMemory(bytesNeeded, uintptr(addr))
+				if err != nil {
+					return nil, false
+				}
+				copy(buf, b.instr)
+				return buf, true
 			}
 		}
 		return nil, false
 	}()
 
-	var err error = nil
+	var err error
 	if !ok {
-		code, err = dbger.GetMemory(32, uintptr(addr))
+		code, err = dbger.GetMemory(bytesNeeded, uintptr(addr))
 	}
-
 	if err != nil {
 		Printf("Error reading memory at 0x%016x: %v\n", addr, err)
 		return
@@ -48,15 +65,13 @@ func (dbger *TypeDbg) disass(addr uint64, sz uint) {
 		Printf("Failed to open capstone engine: %d\n", ret)
 		return
 	}
-
 	defer C.cs_close(&handle)
 
-	count := C.cs_disasm(handle, (*C.uint8_t)(unsafe.Pointer(&code[0])), C.size_t(len(code)), C.uint64_t(addr), 0, &insn)
+	count := C.cs_disasm(handle, (*C.uint8_t)(unsafe.Pointer(&code[0])), C.size_t(len(code)), C.uint64_t(addr), C.size_t(n), &insn)
 	if count == 0 {
 		Printf("Failed to disassemble instruction at address 0x%016x\n", addr)
 		return
 	}
-
 	defer C.cs_free(insn, count)
 
 	instructions := (*[1000]C.cs_insn)(unsafe.Pointer(insn))[:count]
@@ -163,8 +178,17 @@ func (dbger *TypeDbg) disassOne(addr uintptr) (*string, error) {
 
 func (dbger *TypeDbg) disass2ret(addr uint64) {
 	currentAddr := addr
+	// Safety cap so a function without a reachable `ret` (e.g. tail-calls
+	// only, padding/zeroes, or corrupted memory) doesn't loop forever.
+	const maxInstructions = 4096
+	steps := 0
 
 	for {
+		if steps >= maxInstructions {
+			Printf("disass: stopped after %d instructions (no ret found)\n", maxInstructions)
+			return
+		}
+		steps++
 		code, ok := func() ([]byte, bool) {
 			for _, b := range Bps {
 				if uint64(b.addr) == currentAddr && b.isEnable {

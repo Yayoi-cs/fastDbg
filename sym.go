@@ -136,10 +136,16 @@ func findNearestSymbolInLib(libIndex int, relativeAddr uint64) (*string, uint64)
 		if sym.LibIndex != libIndex {
 			continue
 		}
-
+		// Only consider symbols whose [Addr, Addr+Size) actually contains the
+		// query address. This excludes Size=0 markers like GLIBC version
+		// definitions (`GLIBC_2.2.5` etc.) which would otherwise be picked
+		// as "nearest below" with a meaninglessly large offset.
+		if sym.Size == 0 {
+			continue
+		}
 		if sym.Addr <= relativeAddr {
 			offset := relativeAddr - sym.Addr
-			if sym.Size > 0 && offset >= sym.Size {
+			if offset >= sym.Size {
 				continue
 			}
 			if offset < bestOffset {
@@ -217,6 +223,11 @@ type Symbol struct {
 }
 
 type SymbolTable struct {
+	// mu serializes all writes to symbols/addrToSymbol/nameToSymbol/addrNameMap/
+	// rangeMap. Reads after LoadSymbolsFromELF returns don't need to lock
+	// because that function waits for every parser goroutine before returning,
+	// so by the time anyone calls Resolve* the maps are immutable.
+	mu           sync.Mutex
 	symbols      []Symbol
 	addrToSymbol map[uint64]*Symbol
 	nameToSymbol map[string]*Symbol
@@ -241,6 +252,9 @@ func NewSymbolTable() *SymbolTable {
 }
 
 func (st *SymbolTable) AddSymbol(sym Symbol) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
 	key := fmt.Sprintf("%x_%s_%d", sym.Addr, sym.Name, sym.LibIndex)
 
 	actualAddr := sym.Addr
@@ -730,28 +744,36 @@ func (dbger *TypeDbg) LoadSymbolsFromELF() error {
 	}
 
 	libs, err := dbger.ldd()
-	var wg sync.WaitGroup
-	wg.Add(len(libs))
 	if err != nil {
 		Printf("Warning: failed to get shared libraries: %v\n", err)
-	} else {
-		for _, lib := range libs {
-			func() {
-				defer wg.Done()
-				libRoot := rootStruct{
-					name: lib,
-					base: 0,
-					end:  0,
-					root: &symTree{p: make(map[uint8]*symTree)},
-				}
-				libRoots = append(libRoots, libRoot)
+		Printf("Loaded %d symbols from %d libraries\n", len(symTable.symbols), len(libRoots))
+		go symTable.getSortedAddresses()
+		return nil
+	}
 
-				libIndex := len(libRoots) - 1
-				if err := dbger.loadSymbolsFromFile(lib, libIndex); err != nil {
-					Printf("Warning: failed to load symbols from %s: %v\n", lib, err)
-				}
-			}()
-		}
+	// Pre-allocate one libRoots slot per shared library so each parser
+	// goroutine writes to a fixed index. This avoids racing on append; the
+	// per-library symTree is a fresh empty tree under that slot, so no
+	// goroutine touches another goroutine's tree.
+	baseIdx := len(libRoots)
+	for _, lib := range libs {
+		libRoots = append(libRoots, rootStruct{
+			name: lib,
+			root: &symTree{p: make(map[uint8]*symTree)},
+		})
+	}
+
+	var wg sync.WaitGroup
+	for i, lib := range libs {
+		idx := baseIdx + i
+		libName := lib
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := dbger.loadSymbolsFromFile(libName, idx); err != nil {
+				Printf("Warning: failed to load symbols from %s: %v\n", libName, err)
+			}
+		}()
 	}
 	wg.Wait()
 

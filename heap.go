@@ -127,6 +127,27 @@ func (dbger *TypeDbg) detectLibc() (*libcInfo, error) {
 			break
 		}
 	}
+	// Fallback: libRoots[libc].base is often 0 because Reload runs at the
+	// execve initial stop, *before* the dynamic linker has loaded libc. By
+	// the time the user inspects state (e.g. at a breakpoint), libc is in
+	// /proc/maps but Reload hasn't been re-run. Walk procMapsDetail directly
+	// and patch libRoots so future calls are fast.
+	if libcPath == "" {
+		for _, p := range procMapsDetail {
+			if isLibcPath(p.path) && (libcBase == 0 || p.start < libcBase) {
+				libcPath = p.path
+				libcBase = p.start
+			}
+		}
+		if libcPath != "" {
+			for i := range libRoots {
+				if libRoots[i].name == libcPath && libRoots[i].base == 0 {
+					libRoots[i].base = libcBase
+					break
+				}
+			}
+		}
+	}
 	if libcPath == "" {
 		return nil, errors.New("libc not found in loaded libraries (process may not be started)")
 	}

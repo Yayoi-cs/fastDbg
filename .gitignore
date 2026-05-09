@@ -3,3 +3,7 @@ sample
 fastDbg
 trace.ebpf.o
 sample/*
+tmp
+.claude
+libc
+findruction2

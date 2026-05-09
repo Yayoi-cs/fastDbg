@@ -1,10 +1,9 @@
 package main
 
 import (
-	"encoding/binary"
 	"errors"
+	"fastDbg/common"
 	"fmt"
-	"strings"
 )
 
 // FILE / _IO_jump_t / _IO_wide_data layout for glibc 2.35-2.41 on x86_64.
@@ -146,10 +145,10 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 	labels := map[uint64]string{}
 	for i, a := range addrs {
 		labels[a] = streamNames[i]
-		if v := readField(fileBufs[i], stdioOffLock, 8); v != 0 {
+		if v := common.ReadField(fileBufs[i], stdioOffLock, 8); v != 0 {
 			labels[v] = fmt.Sprintf("_IO_stdfile_%d_lock", i)
 		}
-		if v := readField(fileBufs[i], stdioOffWideData, 8); v != 0 {
+		if v := common.ReadField(fileBufs[i], stdioOffWideData, 8); v != 0 {
 			labels[v] = fmt.Sprintf("_IO_wide_data_%d", i)
 		}
 	}
@@ -159,7 +158,7 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 	for i, a := range addrs {
 		cell := fmt.Sprintf("%s0x%016x%s <%s>", ColorGreen, a, ColorReset, streamNames[i])
 		_ = i
-		fmt.Print(padCell(cell, stdioColumnWidth))
+		fmt.Print(common.PadCell(cell, stdioColumnWidth))
 	}
 	fmt.Println()
 
@@ -171,7 +170,7 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 	// Follow FILE.vtable -> _IO_jump_t.
 	vtableBufs := make([][]byte, 3)
 	for i := range fileBufs {
-		va := readField(fileBufs[i], stdioOffVtable, 8)
+		va := common.ReadField(fileBufs[i], stdioOffVtable, 8)
 		if va == 0 {
 			continue
 		}
@@ -189,7 +188,7 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 	// Follow FILE._wide_data.
 	wideBufs := make([][]byte, 3)
 	for i := range fileBufs {
-		wa := readField(fileBufs[i], stdioOffWideData, 8)
+		wa := common.ReadField(fileBufs[i], stdioOffWideData, 8)
 		if wa == 0 {
 			continue
 		}
@@ -209,7 +208,7 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 			if wideBufs[i] == nil {
 				continue
 			}
-			wva := readField(wideBufs[i], stdioOffWideVtable, 8)
+			wva := common.ReadField(wideBufs[i], stdioOffWideVtable, 8)
 			if wva == 0 {
 				continue
 			}
@@ -231,7 +230,7 @@ func (dbger *TypeDbg) cmdStdioDump(_ interface{}) error {
 func (dbger *TypeDbg) printStdioRow(f stdioField, bufs [][]byte, labels map[uint64]string) {
 	fmt.Printf("+0x%02x | %-15s : ", f.offset, f.name)
 	for _, b := range bufs {
-		fmt.Print(padCell(dbger.formatStdioCell(b, f, labels), stdioColumnWidth))
+		fmt.Print(common.PadCell(dbger.formatStdioCell(b, f, labels), stdioColumnWidth))
 	}
 	fmt.Println()
 }
@@ -243,7 +242,7 @@ func (dbger *TypeDbg) formatStdioCell(buf []byte, f stdioField, labels map[uint6
 	if f.size == 0 {
 		return "..."
 	}
-	val := readField(buf, f.offset, f.size)
+	val := common.ReadField(buf, f.offset, f.size)
 
 	var hexStr string
 	switch f.size {
@@ -275,53 +274,6 @@ func (dbger *TypeDbg) formatStdioCell(buf []byte, f stdioField, labels map[uint6
 		return fmt.Sprintf("%s%s%s <%s>", color, hexStr, ColorReset, name)
 	}
 	return fmt.Sprintf("%s%s%s", color, hexStr, ColorReset)
-}
-
-func readField(buf []byte, offset, size int) uint64 {
-	if offset+size > len(buf) {
-		return 0
-	}
-	switch size {
-	case 1:
-		return uint64(buf[offset])
-	case 2:
-		return uint64(binary.LittleEndian.Uint16(buf[offset : offset+2]))
-	case 4:
-		return uint64(binary.LittleEndian.Uint32(buf[offset : offset+4]))
-	case 8:
-		return binary.LittleEndian.Uint64(buf[offset : offset+8])
-	}
-	return 0
-}
-
-// padCell right-pads s with spaces so its visible (ANSI-stripped) width is
-// at least n. We strip ANSI CSI sequences (`\x1b[...m`) when measuring so
-// colored cells line up with uncolored ones.
-func padCell(s string, n int) string {
-	v := visibleLen(s)
-	if v >= n {
-		return s + " "
-	}
-	return s + strings.Repeat(" ", n-v)
-}
-
-func visibleLen(s string) int {
-	n := 0
-	inEsc := false
-	for _, r := range s {
-		if r == 0x1b {
-			inEsc = true
-			continue
-		}
-		if inEsc {
-			if r == 'm' {
-				inEsc = false
-			}
-			continue
-		}
-		n++
-	}
-	return n
 }
 
 func anyNonNil(bufs [][]byte) bool {

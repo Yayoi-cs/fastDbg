@@ -3,6 +3,7 @@ package qemu
 import (
 	"encoding/binary"
 	"errors"
+	"fastDbg/common"
 	"fmt"
 	"github.com/chzyer/readline"
 	"golang.org/x/term"
@@ -42,6 +43,8 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(step|STEP)\s*$`), (*QemuDbg).cmdStep},
 	{regexp.MustCompile(`^\s*(context|CONTEXT)\s*$`), (*QemuDbg).cmdContext},
 	{regexp.MustCompile(`^\s*(kbase|KBASE)\s*$`), (*QemuDbg).cmdKbase},
+	{regexp.MustCompile(`^\s*search-string\s+(\S+)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*QemuDbg).cmdSearchString},
+	{regexp.MustCompile(`^\s*search-value\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*QemuDbg).cmdSearchValue},
 }
 
 func (q *QemuDbg) CmdExec(req string) error {
@@ -120,160 +123,58 @@ func (q *QemuDbg) cmdPrint(a interface{}) error {
 	return nil
 }
 
-func (q *QemuDbg) cmdXxd(a interface{}) error {
-	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
-		return errors.New("invalid arguments")
+func parseXxdArgs(args []string, defaultN uint64) (uint64, uint64, error) {
+	if len(args) < 3 {
+		return 0, 0, errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 64
 	addr, err := strconv.ParseUint(args[2], 0, 64)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
+	n := defaultN
 	if len(args) > 3 && args[3] != "" {
 		n, err = strconv.ParseUint(args[3], 0, 64)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 	}
+	return addr, n, nil
+}
 
-	data, err := q.GetMemory(uint(n), uintptr(addr))
+func (q *QemuDbg) cmdXxd(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, n, err := parseXxdArgs(args, 64)
 	if err != nil {
 		return err
 	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%s%016x%s: ", ColorBlue, addr+uint64(i), ColorReset)
-
-		for j := 0; j < 16; j++ {
-			if i+j < len(data) {
-				fmt.Printf("%02x ", data[i+j])
-			} else {
-				fmt.Printf("   ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpBytes(q, addr, uint(n), os.Stdout)
 }
 
 func (q *QemuDbg) cmdXxdDword(a interface{}) error {
 	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
+	if !ok {
 		return errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 16
-	addr, err := strconv.ParseUint(args[2], 0, 64)
+	addr, n, err := parseXxdArgs(args, 16)
 	if err != nil {
 		return err
 	}
-	if len(args) > 3 && args[3] != "" {
-		n, err = strconv.ParseUint(args[3], 0, 64)
-		if err != nil {
-			return err
-		}
-	}
-
-	data, err := q.GetMemory(uint(n*4), uintptr(addr))
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%s%016x%s: ", ColorBlue, addr+uint64(i), ColorReset)
-
-		for j := 0; j < 16; j += 4 {
-			if len(data)-(i+j) >= 4 {
-				fmt.Printf("%s0x%08x%s ", ColorCyan, binary.LittleEndian.Uint32(data[i+j:i+j+4]), ColorReset)
-			} else {
-				fmt.Printf("           ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpDwords(q, addr, uint(n), os.Stdout)
 }
 
 func (q *QemuDbg) cmdXxdQword(a interface{}) error {
 	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
+	if !ok {
 		return errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 8
-	addr, err := strconv.ParseUint(args[2], 0, 64)
+	addr, n, err := parseXxdArgs(args, 8)
 	if err != nil {
 		return err
 	}
-	if len(args) > 3 && args[3] != "" {
-		n, err = strconv.ParseUint(args[3], 0, 64)
-		if err != nil {
-			return err
-		}
-	}
-
-	data, err := q.GetMemory(uint(n*8), uintptr(addr))
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%s%016x%s: ", ColorBlue, addr+uint64(i), ColorReset)
-
-		for j := 0; j < 16; j += 8 {
-			if len(data)-(i+j) >= 8 {
-				fmt.Printf("%s0x%016x%s ", ColorCyan, binary.LittleEndian.Uint64(data[i+j:i+j+8]), ColorReset)
-			} else {
-				fmt.Printf("                   ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpQwords(q, addr, uint(n), os.Stdout)
 }
 
 func (q *QemuDbg) cmdDisass(a interface{}) error {
@@ -975,5 +876,86 @@ func (q *QemuDbg) cmdKbase(_ interface{}) error {
 		return errors.New("kbase not found in kernel text range")
 	}
 	fmt.Printf("kbase = %s0x%016x%s\n", ColorCyan, kbase, ColorReset)
+	return nil
+}
+
+// ---- search-string / search-value (kernel) ------------------------------
+
+func (q *QemuDbg) cmdSearchString(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 4 {
+		return errors.New("invalid arguments")
+	}
+	pattern := []byte(args[1])
+	start, end, err := parseQemuRange(args[2], args[3])
+	if err != nil {
+		return err
+	}
+	return q.searchAndPrint(pattern, start, end, fmt.Sprintf("%q", string(pattern)))
+}
+
+func (q *QemuDbg) cmdSearchValue(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 4 {
+		return errors.New("invalid arguments")
+	}
+	v, err := strconv.ParseUint(args[1], 0, 64)
+	if err != nil {
+		return fmt.Errorf("invalid value: %v", err)
+	}
+	pattern := common.ValueToBytes(v)
+	start, end, errR := parseQemuRange(args[2], args[3])
+	if errR != nil {
+		return errR
+	}
+	return q.searchAndPrint(pattern, start, end, fmt.Sprintf("0x%x", v))
+}
+
+func parseQemuRange(s, e string) (uint64, uint64, error) {
+	var start, end uint64
+	var err error
+	if s != "" {
+		start, err = strconv.ParseUint(s, 0, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid start: %v", err)
+		}
+	}
+	if e != "" {
+		end, err = strconv.ParseUint(e, 0, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid end: %v", err)
+		}
+	}
+	if start != 0 && end != 0 && start >= end {
+		return 0, 0, fmt.Errorf("start (0x%x) must be < end (0x%x)", start, end)
+	}
+	return start, end, nil
+}
+
+func (q *QemuDbg) searchAndPrint(pattern []byte, start, end uint64, label string) error {
+	if len(pattern) == 0 {
+		return errors.New("empty pattern")
+	}
+	if start == 0 {
+		// Default: kernel-half virtual address space (text + modules + vmalloc).
+		// SearchRange skips unmapped pages so the empty regions don't kill us.
+		start = 0xffffffff80000000
+	}
+	if end == 0 {
+		end = 0xffffffffffffffff
+	}
+
+	fmt.Printf("Searching [0x%x, 0x%x) for %s (%d bytes)...\n", start, end, label, len(pattern))
+	hits := common.SearchRange(q, start, end, pattern)
+
+	fmt.Printf("Found %s%d%s match(es)\n", ColorCyan, len(hits), ColorReset)
+	const maxShow = 200
+	for i, addr := range hits {
+		if i >= maxShow {
+			fmt.Printf("  ... %d more (truncated)\n", len(hits)-maxShow)
+			break
+		}
+		fmt.Printf("  %s0x%016x%s\n", ColorCyan, addr, ColorReset)
+	}
 	return nil
 }

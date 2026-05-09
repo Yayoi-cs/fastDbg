@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fastDbg/common"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,160 +12,58 @@ import (
 	"time"
 )
 
-func (dbger *TypeDbg) cmdDumpByte(a interface{}) error {
-	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
-		return errors.New("invalid arguments")
+func parseDumpArgs(args []string, defaultCount uint64) (uint64, uint64, error) {
+	if len(args) < 3 {
+		return 0, 0, errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 64
 	addr, err := strconv.ParseUint(args[2], 0, 64)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
+	n := defaultCount
 	if len(args) > 3 && args[3] != "" {
 		n, err = strconv.ParseUint(args[3], 0, 64)
 		if err != nil {
-			return err
+			return 0, 0, err
 		}
 	}
+	return addr, n, nil
+}
 
-	data, err := dbger.GetMemory(uint(n), uintptr(addr))
+func (dbger *TypeDbg) cmdDumpByte(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	addr, n, err := parseDumpArgs(args, 64)
 	if err != nil {
 		return err
 	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%016x: ", addr+uint64(i))
-
-		for j := 0; j < 16; j++ {
-			if i+j < len(data) {
-				fmt.Printf("%02x ", data[i+j])
-			} else {
-				fmt.Printf("   ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpBytes(dbger, addr, uint(n), os.Stdout)
 }
 
 func (dbger *TypeDbg) cmdDumpDword(a interface{}) error {
 	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
+	if !ok {
 		return errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 16
-	addr, err := strconv.ParseUint(args[2], 0, 64)
+	addr, n, err := parseDumpArgs(args, 16)
 	if err != nil {
 		return err
 	}
-	if len(args) > 3 && args[3] != "" {
-		n, err = strconv.ParseUint(args[3], 0, 64)
-		if err != nil {
-			return err
-		}
-	}
-
-	data, err := dbger.GetMemory(uint(n*4), uintptr(addr))
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%016x: ", addr+uint64(i))
-
-		for j := 0; j < 16; j += 4 {
-			if len(data)-(i+j) >= 4 {
-				fmt.Printf("0x%08x ", binary.LittleEndian.Uint32(data[i+j:i+j+4]))
-			} else {
-				fmt.Printf("           ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpDwords(dbger, addr, uint(n), os.Stdout)
 }
 
 func (dbger *TypeDbg) cmdDumpQword(a interface{}) error {
 	args, ok := a.([]string)
-	if !ok || len(args) < 3 {
+	if !ok {
 		return errors.New("invalid arguments")
 	}
-
-	var addr uint64
-	var n uint64 = 8
-	addr, err := strconv.ParseUint(args[2], 0, 64)
+	addr, n, err := parseDumpArgs(args, 8)
 	if err != nil {
 		return err
 	}
-	if len(args) > 3 && args[3] != "" {
-		n, err = strconv.ParseUint(args[3], 0, 64)
-		if err != nil {
-			return err
-		}
-	}
-
-	data, err := dbger.GetMemory(uint(n*8), uintptr(addr))
-	if err != nil {
-		return err
-	}
-
-	for i := 0; i < len(data); i += 16 {
-		fmt.Printf("%016x: ", addr+uint64(i))
-
-		for j := 0; j < 16; j += 8 {
-			if len(data)-(i+j) >= 8 {
-				fmt.Printf("0x%016x ", binary.LittleEndian.Uint64(data[i+j:i+j+8]))
-			} else {
-				fmt.Printf("                   ")
-			}
-		}
-
-		fmt.Printf(" |")
-
-		for j := 0; j < 16 && i+j < len(data); j++ {
-			b := data[i+j]
-			if b >= 32 && b <= 126 {
-				fmt.Printf("%c", b)
-			} else {
-				fmt.Printf(".")
-			}
-		}
-
-		fmt.Printf("|\n")
-	}
-
-	return nil
+	return common.DumpQwords(dbger, addr, uint(n), os.Stdout)
 }
 
 var maxDeps int = 0
@@ -294,20 +193,11 @@ func (dbger *TypeDbg) cmdTelescope(a interface{}) error {
 	for i := 0; i < len(code); i += 8 {
 		if i+8 <= len(code) {
 			address := binary.LittleEndian.Uint64(code[i : i+8])
-			var addrInfo string
-			sym, off, err := dbger.ResolveAddrToSymbol(address)
-			color := dbger.addr2color(address)
-			if err == nil {
-				if off == 0 {
-					addrInfo = fmt.Sprintf("%s<%s>%s", color, sym.Name, ColorReset)
-				} else {
-					addrInfo = fmt.Sprintf("%s<%s+0x%x>%s", color, sym.Name, off, ColorReset)
-				}
-			}
-
 			fmt.Fprintf(file, "%s0x%016x%s:+0x%03x(+0x%02x)|%s0x%016x%s%s\n",
-				ColorBlue, addr+uint64(i), ColorReset, i, i/8, color,
-				address, addrInfo, ColorReset)
+				ColorBlue, addr+uint64(i), ColorReset,
+				i, i/8,
+				dbger.addr2color(address), address, ColorReset,
+				dbger.addr2some(address))
 		}
 	}
 	file.Close()

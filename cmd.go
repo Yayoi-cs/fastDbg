@@ -3,9 +3,13 @@ package main
 import (
 	"encoding/binary"
 	"errors"
+	"fastDbg/common"
 	"fastDbg/ebpf"
+	"fastDbg/findruction"
 	"fmt"
 	"golang.org/x/sys/unix"
+	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -25,7 +29,8 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(disable)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdDisable},
 	{regexp.MustCompile(`^\s*(wp)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdWp},
 	{regexp.MustCompile(`^\s*(wp d)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdWpDel},
-	{regexp.MustCompile(`^\s*(disass)(\s+(0[xx][0-9a-fa-f]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDisass},
+	{regexp.MustCompile(`^\s*(disass)\s+(f|func|F|FUNC)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdDisassFunc},
+	{regexp.MustCompile(`^\s*(disass)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdDisass},
 	{regexp.MustCompile(`^\s*(stackframe|stkf|STACKFRAME|STKF)(\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?$`), (*TypeDbg).cmdStackFrame},
 	{regexp.MustCompile(`^\s*(p|print|P|PRINT)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdPrint},
 	{regexp.MustCompile(`^\s*(r|run|R|RUN)(?:\s+(.+))?$`), (*TypeDbg).cmdRun},
@@ -45,6 +50,10 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*(arena|arenas|ARENA|ARENAS)\s*$`), (*TypeDbg).cmdArena},
 	{regexp.MustCompile(`^\s*(chunk|CHUNK)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdChunk},
 	{regexp.MustCompile(`^\s*(stdio|stdio-dump|STDIO|STDIO-DUMP)\s*$`), (*TypeDbg).cmdStdioDump},
+	{regexp.MustCompile(`^\s*cyclic\s+(?:(-d|-D)\s+)?(\S+)\s*$`), (*TypeDbg).cmdCyclic},
+	{regexp.MustCompile(`^\s*search-string\s+(\S+)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdSearchString},
+	{regexp.MustCompile(`^\s*search-value\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdSearchValue},
+	{regexp.MustCompile(`^\s*findruction\s+"([^"]+)"(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdFindruction},
 	{regexp.MustCompile(`^\s*(fs|fs_base)\s*$`), (*TypeDbg).cmdFs},
 	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
 	{regexp.MustCompile(`^\s*(set32)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
@@ -462,7 +471,7 @@ func (dbger *TypeDbg) cmdContext(a interface{}) error {
 
 	hLine("disassembly")
 	if regs != nil {
-		dbger.disass(rip, 32)
+		dbger.disass(rip, 10)
 	}
 
 	hLine("back trace")
@@ -703,36 +712,59 @@ func (dbger *TypeDbg) cmdCmd(a interface{}) error {
 	return err
 }
 
+// cmdDisass — `disass [addr] [count]`.
+// No args:           disassemble until ret from RIP.
+// `disass <addr>`:   16 instructions starting at addr.
+// `disass <a> <n>`:  n instructions starting at addr.
 func (dbger *TypeDbg) cmdDisass(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok {
+		return errors.New("invalid arguments")
+	}
+	if len(args[2]) == 0 {
+		addr, err := dbger.GetRip()
+		if err != nil {
+			return err
+		}
+		dbger.disass2ret(addr)
+		return nil
+	}
+	addr, err := strconv.ParseUint(args[3], 0, 64)
+	if err != nil {
+		return err
+	}
+	var n uint64 = 16
+	if args[4] != "" {
+		n, err = strconv.ParseUint(args[5], 0, 32)
+		if err != nil {
+			return err
+		}
+	}
+	dbger.disass(addr, uint(n))
+	return nil
+}
+
+// cmdDisassFunc — `disass f|func [addr]`. Disassembles until the next `ret`.
+// No addr defaults to RIP.
+func (dbger *TypeDbg) cmdDisassFunc(a interface{}) error {
 	args, ok := a.([]string)
 	if !ok {
 		return errors.New("invalid arguments")
 	}
 	var addr uint64
 	var err error
-	if len(args[2]) == 0 {
+	if len(args) > 4 && args[4] != "" {
+		addr, err = strconv.ParseUint(args[4], 0, 64)
+		if err != nil {
+			return err
+		}
+	} else {
 		addr, err = dbger.GetRip()
 		if err != nil {
 			return err
 		}
-		dbger.disass2ret(addr)
-		return nil
-	} else {
-		addr, err = strconv.ParseUint(args[3], 0, 64)
-		if err != nil {
-			return err
-		}
 	}
-	var sz uint64 = 32
-	if args[4] != "" {
-		sz, err = strconv.ParseUint(args[5], 0, 32)
-		if err != nil {
-			return err
-		}
-	}
-
-	dbger.disass(addr, uint(sz))
-
+	dbger.disass2ret(addr)
 	return nil
 }
 
@@ -1252,4 +1284,292 @@ func (dbger *TypeDbg) cmdWpDel(a interface{}) error {
 	}
 
 	return err
+}
+
+// ---- cyclic / De Bruijn -------------------------------------------------
+
+func (dbger *TypeDbg) cmdCyclic(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 3 {
+		return errors.New("invalid arguments")
+	}
+
+	flag := args[1]
+	value := args[2]
+
+	if flag == "-d" || flag == "-D" {
+		var pattern []byte
+		if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+			v, err := strconv.ParseUint(value, 0, 64)
+			if err != nil {
+				return fmt.Errorf("invalid hex value: %v", err)
+			}
+			pattern = common.ValueToBytes(v)
+		} else {
+			pattern = []byte(value)
+		}
+
+		offset := common.CyclicFind(pattern)
+		if offset < 0 {
+			fmt.Printf("%spattern %q not found in cyclic(26^4)%s\n", ColorRed, string(pattern), ColorReset)
+			return nil
+		}
+		fmt.Printf("offset: %s%d%s (%s0x%x%s)  pattern: %q\n",
+			ColorCyan, offset, ColorReset,
+			ColorCyan, offset, ColorReset,
+			string(pattern))
+		return nil
+	}
+
+	n, err := strconv.ParseUint(value, 0, 64)
+	if err != nil {
+		return fmt.Errorf("invalid length: %v", err)
+	}
+	const maxLen = 26 * 26 * 26 * 26
+	if n > maxLen {
+		return fmt.Errorf("length %d exceeds maximum (26^4 = %d)", n, maxLen)
+	}
+	fmt.Println(string(common.CyclicGenerate(int(n))))
+	return nil
+}
+
+// ---- search-string / search-value ---------------------------------------
+
+func (dbger *TypeDbg) cmdSearchString(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 4 {
+		return errors.New("invalid arguments")
+	}
+	pattern := []byte(args[1])
+	start, end, err := parseOptionalRange(args[2], args[3])
+	if err != nil {
+		return err
+	}
+	return dbger.searchAndPrint(pattern, start, end, fmt.Sprintf("%q", string(pattern)))
+}
+
+func (dbger *TypeDbg) cmdSearchValue(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 4 {
+		return errors.New("invalid arguments")
+	}
+	v, err := strconv.ParseUint(args[1], 0, 64)
+	if err != nil {
+		return fmt.Errorf("invalid value: %v", err)
+	}
+	pattern := common.ValueToBytes(v)
+	start, end, errR := parseOptionalRange(args[2], args[3])
+	if errR != nil {
+		return errR
+	}
+	return dbger.searchAndPrint(pattern, start, end, fmt.Sprintf("0x%x", v))
+}
+
+// parseOptionalRange returns (start, end, err) given two regex capture
+// strings that may be empty. An empty string means "unspecified".
+func parseOptionalRange(s, e string) (uint64, uint64, error) {
+	var start, end uint64
+	var err error
+	if s != "" {
+		start, err = strconv.ParseUint(s, 0, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid start: %v", err)
+		}
+	}
+	if e != "" {
+		end, err = strconv.ParseUint(e, 0, 64)
+		if err != nil {
+			return 0, 0, fmt.Errorf("invalid end: %v", err)
+		}
+	}
+	if start != 0 && end != 0 && start >= end {
+		return 0, 0, fmt.Errorf("start (0x%x) must be < end (0x%x)", start, end)
+	}
+	return start, end, nil
+}
+
+func (dbger *TypeDbg) searchAndPrint(pattern []byte, start, end uint64, label string) error {
+	if !dbger.isStart {
+		return errors.New("debuggee has not started")
+	}
+	if len(pattern) == 0 {
+		return errors.New("empty pattern")
+	}
+
+	hits := dbger.searchUserland(pattern, start, end)
+
+	scope := "all readable mappings"
+	if start != 0 || end != 0 {
+		s := start
+		e := end
+		if e == 0 {
+			e = ^uint64(0)
+		}
+		scope = fmt.Sprintf("[0x%x, 0x%x)", s, e)
+	}
+	fmt.Printf("Searched %s for %s (%d bytes) — %s%d%s match(es)\n",
+		scope, label, len(pattern), ColorCyan, len(hits), ColorReset)
+
+	const maxShow = 200
+	for i, addr := range hits {
+		if i >= maxShow {
+			fmt.Printf("  ... %d more (truncated)\n", len(hits)-maxShow)
+			break
+		}
+		fmt.Printf("  %s0x%016x%s%s\n", dbger.addr2color(addr), addr, ColorReset, dbger.addr2some(addr))
+	}
+	return nil
+}
+
+// searchUserland walks every readable mapping in procMapsDetail and returns
+// addresses where `pattern` appears. If start/end are non-zero, results are
+// constrained to that virtual-address window.
+func (dbger *TypeDbg) searchUserland(pattern []byte, start, end uint64) []uint64 {
+	var hits []uint64
+	if len(pattern) == 0 {
+		return hits
+	}
+	for _, p := range procMapsDetail {
+		if !p.r {
+			continue
+		}
+		rangeStart, rangeEnd := p.start, p.end
+		if start != 0 {
+			if rangeEnd <= start {
+				continue
+			}
+			if rangeStart < start {
+				rangeStart = start
+			}
+		}
+		if end != 0 {
+			if rangeStart >= end {
+				continue
+			}
+			if rangeEnd > end {
+				rangeEnd = end
+			}
+		}
+		if rangeEnd-rangeStart < uint64(len(pattern)) {
+			continue
+		}
+		buf, err := dbger.GetMemory(uint(rangeEnd-rangeStart), uintptr(rangeStart))
+		if err != nil || len(buf) < len(pattern) {
+			continue
+		}
+		hits = append(hits, common.SearchInBuffer(buf, rangeStart, pattern)...)
+	}
+	return hits
+}
+
+// ---- findruction --------------------------------------------------------
+
+// memReaderAdapter wraps the *TypeDbg memory backend in the small interface
+// findruction.FormatGroups expects (`ReadMem(addr, n)`). Lets the package
+// stay decoupled from the main *TypeDbg type while still using ptrace.
+type memReaderAdapter struct{ d *TypeDbg }
+
+func (m *memReaderAdapter) ReadMem(addr uint64, n int) []byte {
+	if n <= 0 {
+		return nil
+	}
+	b, err := m.d.GetMemory(uint(n), uintptr(addr))
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// cmdFindruction — `findruction "<asm>" [start] [end]`.
+//
+//   - No address args: assemble, then in parallel scan the executable PT_LOAD
+//     segments of every loaded library's ELF file. Group the results per
+//     library. This is fast (no ptrace) and complete (covers every byte the
+//     linker laid out, not just faulted-in pages).
+//   - Address args: clip to executable mappings inside [start, end) and read
+//     them through ptrace. Group results per executable section.
+//
+// In both modes we then disassemble a few instructions of context after each
+// match (capstone), and page the output through `less -SR` for scrolling.
+func (dbger *TypeDbg) cmdFindruction(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 4 {
+		return errors.New("invalid arguments")
+	}
+	asm := args[1]
+	start, end, err := parseOptionalRange(args[2], args[3])
+	if err != nil {
+		return err
+	}
+
+	pattern, err := findruction.AsmToBytes(asm)
+	if err != nil {
+		return fmt.Errorf("assemble %q: %v", asm, err)
+	}
+
+	const disasmCount = 7
+
+	var groups []findruction.Group
+	var reader findruction.MemReader
+
+	if start == 0 && end == 0 {
+		var libs []string
+		var bases []uint64
+		for _, lr := range libRoots {
+			if lr.name == "" {
+				continue
+			}
+			libs = append(libs, lr.name)
+			bases = append(bases, lr.base)
+		}
+		if len(libs) == 0 {
+			return errors.New("no libraries loaded")
+		}
+		groups = findruction.SearchAllLibraries(libs, bases, pattern)
+	} else {
+		if !dbger.isStart {
+			return errors.New("debuggee has not started — address-bounded mode requires a live process")
+		}
+		var regions []findruction.ExecRegion
+		for _, p := range procMapsDetail {
+			if !p.x {
+				continue
+			}
+			regions = append(regions, findruction.ExecRegion{
+				Start: p.start,
+				End:   p.end,
+				Path:  p.path,
+			})
+		}
+		groups = findruction.SearchMemoryRange(dbger, regions, start, end, pattern)
+		reader = &memReaderAdapter{d: dbger}
+	}
+
+	// Prefer the interactive 3-pane TUI when stdout is a terminal. When
+	// piped (e.g. CI smoke tests with `echo ... | fastDbg`) fall back to
+	// the same less-style listing the previous version used so output stays
+	// scriptable.
+	if isTerminal(os.Stdout) {
+		return findruction.RunTUI(groups, pattern, reader)
+	}
+	// FormatGroups distinguishes "no reader → use file bytes" from "has
+	// reader → use live memory" by checking for nil. Pass an untyped nil
+	// when reader is unset so the file-bytes path activates.
+	var formatReader interface {
+		ReadMem(addr uint64, n int) []byte
+	}
+	if reader != nil {
+		formatReader = reader
+	}
+	return findruction.PageThroughLess(func(w io.Writer) {
+		findruction.FormatGroups(w, groups, pattern, disasmCount, formatReader)
+	})
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
