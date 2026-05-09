@@ -11,7 +11,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -54,6 +56,10 @@ var compiledCmds = []cmdHandler{
 	{regexp.MustCompile(`^\s*search-string\s+(\S+)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdSearchString},
 	{regexp.MustCompile(`^\s*search-value\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdSearchValue},
 	{regexp.MustCompile(`^\s*findruction\s+"([^"]+)"(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?(?:\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0))?\s*$`), (*TypeDbg).cmdFindruction},
+	{regexp.MustCompile(`^\s*asm\s+(?:"([^"]+)"|(\S+))\s*$`), (*TypeDbg).cmdAsm},
+	{regexp.MustCompile(`^\s*(proc-info|procinfo|proc\.info|PROC-INFO|PROCINFO)\s*$`), (*TypeDbg).cmdProcInfo},
+	{regexp.MustCompile(`^\s*(fd|fds|FD|FDS)\s*$`), (*TypeDbg).cmdFd},
+	{regexp.MustCompile(`^\s*(checksec|CHECKSEC)(?:\s+(\S+))?\s*$`), (*TypeDbg).cmdCheckSec},
 	{regexp.MustCompile(`^\s*(fs|fs_base)\s*$`), (*TypeDbg).cmdFs},
 	{regexp.MustCompile(`^\s*(vis|visual-heap|VIS|VISUAL-HEAP)\s*$`), (*TypeDbg).cmdVisualHeap},
 	{regexp.MustCompile(`^\s*(set32)\s+(\S+)\s+(0[xX][0-9a-fA-F]+|0[0-7]+|[1-9][0-9]*|0)$`), (*TypeDbg).cmdSet32},
@@ -1480,17 +1486,6 @@ func (m *memReaderAdapter) ReadMem(addr uint64, n int) []byte {
 	return b
 }
 
-// cmdFindruction — `findruction "<asm>" [start] [end]`.
-//
-//   - No address args: assemble, then in parallel scan the executable PT_LOAD
-//     segments of every loaded library's ELF file. Group the results per
-//     library. This is fast (no ptrace) and complete (covers every byte the
-//     linker laid out, not just faulted-in pages).
-//   - Address args: clip to executable mappings inside [start, end) and read
-//     them through ptrace. Group results per executable section.
-//
-// In both modes we then disassemble a few instructions of context after each
-// match (capstone), and page the output through `less -SR` for scrolling.
 func (dbger *TypeDbg) cmdFindruction(a interface{}) error {
 	args, ok := a.([]string)
 	if !ok || len(args) < 4 {
@@ -1572,4 +1567,171 @@ func isTerminal(f *os.File) bool {
 		return false
 	}
 	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// cmdAsm assembles `asm` (Intel syntax x86_64) into machine code and prints
+// the bytes as an xxd-style hex dump. Same assembly path as findruction so
+// the bytes match what findruction would search for.
+//
+//   asm "pop rdi; ret"
+//   asm syscall
+//   asm "mov rax, 0x3b; mov rdi, rsi; syscall"
+func (dbger *TypeDbg) cmdAsm(a interface{}) error {
+	args, ok := a.([]string)
+	if !ok || len(args) < 3 {
+		return errors.New("invalid arguments")
+	}
+	asm := args[1]
+	if asm == "" {
+		asm = args[2]
+	}
+
+	bytes, err := findruction.AsmToBytes(asm)
+	if err != nil {
+		return fmt.Errorf("assemble %q: %v", asm, err)
+	}
+
+	fmt.Printf("%s%d bytes%s: ", ColorCyan, len(bytes), ColorReset)
+	for _, b := range bytes {
+		fmt.Printf("%02x", b)
+	}
+	fmt.Println()
+
+	for i := 0; i < len(bytes); i += 16 {
+		fmt.Printf("%s%016x%s: ", ColorBlue, i, ColorReset)
+		for j := 0; j < 16; j++ {
+			if i+j < len(bytes) {
+				fmt.Printf("%02x ", bytes[i+j])
+			} else {
+				fmt.Print("   ")
+			}
+		}
+		fmt.Print(" |")
+		for j := 0; j < 16 && i+j < len(bytes); j++ {
+			b := bytes[i+j]
+			if b >= 32 && b <= 126 {
+				fmt.Printf("%c", b)
+			} else {
+				fmt.Print(".")
+			}
+		}
+		fmt.Println("|")
+	}
+	return nil
+}
+
+func (dbger *TypeDbg) cmdFd(_ interface{}) error {
+	if !dbger.isStart || !dbger.isProcessAlive() {
+		return errors.New("debuggee has not started or is not alive")
+	}
+	pid := dbger.pid
+
+	fdDir := fmt.Sprintf("/proc/%d/fd", pid)
+	entries, err := os.ReadDir(fdDir)
+	if err != nil {
+		return fmt.Errorf("read /proc/%d/fd: %v", pid, err)
+	}
+
+	type fdEntry struct {
+		num    int
+		target string
+		flags  uint64
+	}
+	var fds []fdEntry
+	for _, e := range entries {
+		n, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		t, err := os.Readlink(filepath.Join(fdDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var flags uint64
+		if data, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%d", pid, n)); err == nil {
+			for _, ln := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(ln, "flags:") {
+					flags, _ = strconv.ParseUint(strings.TrimSpace(strings.TrimPrefix(ln, "flags:")), 8, 64)
+					break
+				}
+			}
+		}
+		fds = append(fds, fdEntry{n, t, flags})
+	}
+	sort.Slice(fds, func(i, j int) bool { return fds[i].num < fds[j].num })
+
+	if len(fds) == 0 {
+		fmt.Println("(no open file descriptors)")
+		return nil
+	}
+
+	fmt.Printf("%s%4s  %-6s  %-22s  %s%s\n", ColorBold, "FD", "TYPE", "FLAGS", "TARGET", ColorReset)
+	for _, fd := range fds {
+		fmt.Printf("%s%4d%s  %s%-6s%s  %s%-22s%s  %s\n",
+			ColorCyan, fd.num, ColorReset,
+			ColorPurple, fdKind(fd.target), ColorReset,
+			ColorYellow, decodeOpenFlags(fd.flags), ColorReset,
+			fd.target)
+	}
+	return nil
+}
+
+func fdKind(target string) string {
+	switch {
+	case strings.HasPrefix(target, "socket:["):
+		return "SOCK"
+	case strings.HasPrefix(target, "pipe:["):
+		return "PIPE"
+	case strings.HasPrefix(target, "anon_inode:"):
+		return "ANON"
+	case strings.HasPrefix(target, "/memfd:"):
+		return "MEMFD"
+	case strings.HasPrefix(target, "/dev/pts/"), strings.HasPrefix(target, "/dev/tty"):
+		return "TTY"
+	case strings.HasPrefix(target, "/dev/"):
+		return "DEV"
+	case strings.Contains(target, " (deleted)"):
+		return "DEL"
+	default:
+		return "FILE"
+	}
+}
+
+func decodeOpenFlags(flags uint64) string {
+	parts := make([]string, 0, 4)
+	switch flags & 0o3 {
+	case 0:
+		parts = append(parts, "R")
+	case 1:
+		parts = append(parts, "W")
+	case 2:
+		parts = append(parts, "RW")
+	}
+	type bit struct {
+		mask uint64
+		name string
+	}
+	bits := []bit{
+		{0o100, "CREAT"},
+		{0o200, "EXCL"},
+		{0o400, "NOCTTY"},
+		{0o1000, "TRUNC"},
+		{0o2000, "APPEND"},
+		{0o4000, "NONBLOCK"},
+		{0o10000, "DSYNC"},
+		{0o20000, "ASYNC"},
+		{0o40000, "DIRECT"},
+		{0o100000, "LARGE"},
+		{0o200000, "DIR"},
+		{0o400000, "NOFOLLOW"},
+		{0o1000000, "NOATIME"},
+		{0o2000000, "CLOEXEC"},
+		{0o10000000, "PATH"},
+	}
+	for _, b := range bits {
+		if flags&b.mask != 0 {
+			parts = append(parts, b.name)
+		}
+	}
+	return strings.Join(parts, "|")
 }
